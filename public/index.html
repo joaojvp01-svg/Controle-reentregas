@@ -1,0 +1,52 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Controle de Reentregas · CD Barueri</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div id="login" class="login hidden">
+  <form id="loginForm" class="card login-card">
+    <div class="brand-big">Controle de Reentregas</div>
+    <div class="muted">CD Barueri · Venda Direta e Vet Criador</div>
+    <div class="seg" id="perfilSeg">
+      <button type="button" data-v="op" class="on">Operação</button>
+      <button type="button" data-v="adm">ADM</button>
+    </div>
+    <label>Nome / usuário<input id="lgUser" autocomplete="username" required></label>
+    <label id="lgNomeWrap" class="hidden">Seu nome (aparece nas aprovações)<input id="lgNome"></label>
+    <label>Senha <span class="muted small" id="lgSenhaHint">(se a operação tiver senha)</span><input id="lgPass" type="password" autocomplete="current-password"></label>
+    <button class="btn primary big">Entrar</button>
+    <div id="lgErr" class="err"></div>
+  </form>
+</div>
+
+<div id="app" class="hidden shell">
+  <aside class="side">
+    <div class="brand">Reentregas<span>CD Barueri</span></div>
+    <nav id="nav">
+      <button data-v="dashboard"><i>▦</i>Dashboard</button>
+      <button data-v="registrar"><i>＋</i>Registrar</button>
+      <button data-v="aprovacoes" data-adm><i>✓</i>Aprovações <b id="pendBadge" class="badge hidden">0</b></button>
+      <button data-v="registros"><i>≡</i>Registros</button>
+      <button data-v="consulta"><i>⌕</i>Consulta NF</button>
+      <button data-v="admin" data-adm><i>⚙</i>Admin</button>
+    </nav>
+    <div class="who"><span id="whoName"></span><button id="logout" class="link">Sair</button></div>
+  </aside>
+  <main id="main"></main>
+</div>
+
+<div id="modal" class="modal hidden"><div class="modal-box card" id="modalBox"></div></div>
+<div id="toast" class="toast hidden"></div>
+
+<script src="vendor/xlsx.full.min.js"></script>
+<script src="vendor/chart.umd.min.js"></script>
+<script src="app.js"></script>
+<script src="dashboard.js"></script>
+<script src="admin.js"></script>
+<script>initLogin(); (async()=>{ try{ S.token=localStorage.getItem("reent_tok"); }catch(e){} if(S.token){ try{ await boot(); return; }catch(e){} } logout(); })();</script>
+</body>
+</html>
