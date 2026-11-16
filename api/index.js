@@ -2,7 +2,7 @@
 // Todas as rotas: /api/<acao>  (ex.: /api/login, /api/list?m=2026-11)
 const crypto = require('crypto');
 const { getRedis } = require('../lib/redis');
-const { storeImage } = require('../lib/blob');
+const { storeImage, readImage } = require('../lib/blob');
 
 const SECRET = () => process.env.AUTH_SECRET || process.env.ADMIN_PASSWORD || 'troque-este-segredo';
 const TTL_HORAS = 14;
@@ -173,6 +173,23 @@ module.exports = async (req, res) => {
       if (!nome) return send(400, { error: 'Informe seu nome' });
       if (process.env.OPER_PASSWORD && senha !== process.env.OPER_PASSWORD) return send(401, { error: 'Senha da operação inválida' });
       return send(200, { token: sign({ r: 'op', n: nome, exp: Date.now() + TTL_HORAS * 3600e3 }), perfil: 'op', nome });
+    }
+
+    // ---- foto (Blob privado): <img src="/api/foto?p=...&t=TOKEN"> ----
+    if (action === 'foto') {
+      if (!verify(q.t || (req.headers.authorization || '').replace(/^Bearer\s+/i, ''))) { res.statusCode = 401; return res.end('Sem acesso'); }
+      const p = String(q.p || '');
+      if (!/^reentregas\/[\w./-]+$/.test(p)) { res.statusCode = 400; return res.end('Foto inválida'); }
+      const result = await readImage(p, req.headers['if-none-match'] || undefined);
+      if (!result) { res.statusCode = 404; return res.end('Foto não encontrada'); }
+      res.setHeader('Cache-Control', 'private, max-age=86400');
+      if (result.blob && result.blob.etag) res.setHeader('ETag', result.blob.etag);
+      if (result.statusCode === 304) { res.statusCode = 304; return res.end(); }
+      if (result.statusCode !== 200) { res.statusCode = 404; return res.end('Foto não encontrada'); }
+      res.setHeader('Content-Type', result.blob.contentType || 'image/jpeg');
+      res.setHeader('X-Content-Type-Options', 'nosniff');
+      const buf = Buffer.from(await new Response(result.stream).arrayBuffer());
+      res.statusCode = 200; return res.end(buf);
     }
 
     const tok = (req.headers.authorization || '').replace(/^Bearer\s+/i, '');

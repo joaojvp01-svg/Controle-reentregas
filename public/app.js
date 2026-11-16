@@ -258,12 +258,14 @@ async function compressImg(file, max = 1600, q = 0.72) {
     return c.toDataURL('image/jpeg', q);
   } finally { URL.revokeObjectURL(url); }
 }
+// fotos de Blob privado passam pelo app com o login na URL
+const fotoSrc = (u) => (u && u.startsWith('/api/foto') ? u + '&t=' + encodeURIComponent(S.token || '') : u);
 async function enviarFoto(file) { const data = await compressImg(file); const j = await api('upload', { data }); return j.url; }
 function renderFotos() {
   const doc = $('#fDocBox'), av = $('#fAvBox'); if (!doc) return;
-  doc.innerHTML = FOTOS.doc ? `<div class="ph-one"><img src="${esc(FOTOS.doc)}" class="ph-th" data-full="${esc(FOTOS.doc)}"><button type="button" class="btn sm" id="fDocDel">Remover</button></div>`
+  doc.innerHTML = FOTOS.doc ? `<div class="ph-one"><img src="${esc(fotoSrc(FOTOS.doc))}" class="ph-th" data-full="${esc(fotoSrc(FOTOS.doc))}"><button type="button" class="btn sm" id="fDocDel">Remover</button></div>`
     : `<label class="ph-add"><input type="file" accept="image/*" id="fDocIn" hidden>📷 Tirar / escolher foto</label>`;
-  av.innerHTML = `<div class="ph-list">${FOTOS.avarias.map((a, i) => `<div class="ph-item"><img src="${esc(a.url)}" class="ph-th" data-full="${esc(a.url)}" data-desc="${esc(a.desc)}">
+  av.innerHTML = `<div class="ph-list">${FOTOS.avarias.map((a, i) => `<div class="ph-item"><img src="${esc(fotoSrc(a.url))}" class="ph-th" data-full="${esc(fotoSrc(a.url))}" data-desc="${esc(a.desc)}">
       <input class="ph-desc" data-i="${i}" placeholder="Descreva a avaria (ex.: saco rasgado, 2 un.)" value="${esc(a.desc)}"><button type="button" class="btn sm ph-del" data-i="${i}">✕</button></div>`).join('')}</div>
     <label class="ph-add"><input type="file" accept="image/*" multiple id="fAvIn" hidden>➕ Adicionar fotos de avaria</label>`;
   const up = async (files, onUrl, box) => {
@@ -283,7 +285,7 @@ function galeriaHTML(r) {
   if (r.fotoDoc) it.push({ url: r.fotoDoc, desc: 'Foto da ' + (r.tipo === 'NFD' ? 'NFD' : 'ocorrência') });
   (r.fotosAvaria || []).forEach((a, i) => it.push({ url: a.url, desc: 'Avaria ' + (i + 1) + (a.desc ? ': ' + a.desc : '') }));
   if (!it.length) return '';
-  return `<div class="gal">${it.map((x) => `<figure><img src="${esc(x.url)}" class="ph-th" data-full="${esc(x.url)}" data-desc="${esc(x.desc)}"><figcaption>${esc(x.desc)}</figcaption></figure>`).join('')}</div>`;
+  return `<div class="gal">${it.map((x) => `<figure><img src="${esc(fotoSrc(x.url))}" class="ph-th" data-full="${esc(fotoSrc(x.url))}" data-desc="${esc(x.desc)}" loading="lazy"><figcaption>${esc(x.desc)}</figcaption></figure>`).join('')}</div>`;
 }
 document.addEventListener('click', (e) => {
   const im = e.target.closest('img.ph-th'); if (!im) return;
