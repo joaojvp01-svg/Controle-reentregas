@@ -66,6 +66,38 @@ function findSheet(wb, ...names) { const ns = names.map(H); return wb.SheetNames
 async function readFile(file) { const buf = await file.arrayBuffer(); return XLSX.read(buf, { type: 'array', cellDates: false }); }
 function hashStr(s) { let h = 2166136261; for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 16777619); } return (h >>> 0).toString(36); }
 
+// ---------- base de motoristas (relatório de veículos do TMS) ----------
+const NAO_MOTORISTA = /PEND[EÊ]NCIA|N[AÃ]O SAIU|^TRANSPORTADORA |^\s*(FULL FLEX|3ZX)\s*$/;
+function transpCurta(v) {
+  const k = normTransp(v); if (k) return k;
+  const s = strip(v).replace(/\b(LTDA|ME|EIRELI|S\/?A|TRANSPORTES?|E SERVICOS|SERVICOS|LOGISTICA)\b/g, '').replace(/\s+/g, ' ').trim();
+  return s && s !== '-' ? s : '';
+}
+function parseVeiculos(rows) {
+  const h = header(rows, 'Placa', 3); if (!h) throw new Error('Não achei a coluna "Placa". Use o relatório de veículos exportado do TMS.');
+  const c = h.col; const g = (r, k) => (c[k] != null ? r[c[k]] : null);
+  if (c['MOTORISTA'] == null) throw new Error('Não achei a coluna "Motorista" no arquivo.');
+  const out = []; const ign = { ficticias: 0, semMotorista: 0 }; const seen = new Set();
+  for (let i = h.hi + 1; i < rows.length; i++) {
+    const r = rows[i]; const placa = String(g(r, 'PLACA') || '').replace(/[\s-]/g, '').toUpperCase(); const nome = String(g(r, 'MOTORISTA') || '').replace(/\s+/g, ' ').trim().toUpperCase();
+    if (!placa && !nome) continue;
+    const tr = String(g(r, 'TRANSPORTADORA') || '').trim();
+    if (strip(tr) === 'PLACAS FICTICIAS' || !nome || NAO_MOTORISTA.test(strip(nome))) { ign.ficticias++; continue; }
+    if (seen.has(placa + nome)) continue; seen.add(placa + nome);
+    out.push({ nome, placa, transp: transpCurta(tr), transpNome: tr, veiculo: String(g(r, 'TIPO VEICULO') || '').trim(), cap: parseNum(g(r, 'CAPACIDADE')) || undefined, ativo: strip(g(r, 'ATIVO')) !== 'NAO' });
+  }
+  return { motoristas: out, ign };
+}
+async function readTable(file) {
+  if (/\.csv$/i.test(file.name)) {
+    const buf = new Uint8Array(await file.arrayBuffer());
+    let txt = new TextDecoder('utf-8').decode(buf); if (txt.includes('\uFFFD')) txt = new TextDecoder('windows-1252').decode(buf);
+    const wb = XLSX.read(txt.replace(/^\uFEFF/, ''), { type: 'string', raw: true, FS: txt.split('\n')[0].includes(';') ? ';' : ',' });
+    return sheetRows(wb.Sheets[wb.SheetNames[0]]);
+  }
+  const wb = await readFile(file); return sheetRows(wb.Sheets[wb.SheetNames[0]]);
+}
+
 // ---------- consolidado ----------
 function parseConsolidado(wb) {
   const rows = []; const stats = {}; const porAba = []; const seen = new Set();
@@ -174,11 +206,6 @@ function parseAntiga(wb, opts) {
       out.recs.push({ id: idOf('OC', nf, data, mot, nth('OC' + nf + data + mot)), tipo: 'OCORRENCIA', nf, data, hora: excelTime(r[c['HORARIO']]), motivo: mot, dataEntrega: excelDate(r[c['DATA DA ENTREGA']]) || undefined,
         motorista: String(r[c['MOTORISTA']] || '').trim().toUpperCase(), transportadora: normTransp(r[c['TRANSPORTADORA']]), conferente: String(r[c['CONFERENTE']] || '').trim().toUpperCase(), turno: normTurno(r[c['TURNO']]), status: conf === 'NAO RECEBIDO' ? 'RECUSADO' : 'APROVADO' }); n++; }
     rel['Ocorrências'] = { n, ignoradas: bad }; } } }
-  // Motoristas
-  { const sn = findSheet(wb, 'Lista de Motoristas'); if (sn) { const R = sheetRows(wb.Sheets[sn]); const h = header(R, 'Placa', 3); if (h) { const c = h.col; const seen = new Set();
-    for (let i = h.hi + 1; i < R.length; i++) { const r = R[i]; const nome = String(r[c['MOTORISTA']] || '').replace(/\s+/g, ' ').trim().toUpperCase(); if (!nome) continue; const placa = String(r[c['PLACA']] || '').trim().toUpperCase(); const k = nome + placa; if (seen.has(k)) continue; seen.add(k);
-      out.motoristas.push({ nome, placa, transp: normTransp(r[c['TRANSPORTADORA']]), veiculo: String(r[c['TIPO VEICULO']] || '').trim(), cap: r[c['CAPACIDADE']] || '' }); }
-    rel.Motoristas = { n: out.motoristas.length }; } } }
   // limpa campos vazios
   out.recs.forEach((r) => Object.keys(r).forEach((k) => { if (r[k] === '' || r[k] == null) delete r[k]; }));
   return out;
@@ -196,7 +223,7 @@ function vAdmin() {
       <div id="aFatOut"></div>
     </div>
     <div class="card stack"><h3>2. Importar histórico da planilha antiga</h3>
-      <div class="muted small">Lê as abas PA, VET, Recebimento Reentregas PA/VET, Recebimento NFDs, Recebimento Ocorrências e Lista de Motoristas. Os recebimentos são casados com os lançamentos das abas PA/VET (mesma NF, até 7 dias) e completam hora, motorista, valor, conferente e turno. Pode importar de novo sem duplicar.</div>
+      <div class="muted small">Lê as abas PA, VET, Recebimento Reentregas PA/VET, Recebimento NFDs, e Recebimento Ocorrências. Os recebimentos são casados com os lançamentos das abas PA/VET (mesma NF, até 7 dias) e completam hora, motorista, valor, conferente e turno. Pode importar de novo sem duplicar.</div>
       <label style="flex-direction:row;align-items:center;gap:6px"><input type="checkbox" id="aSemLanc" checked style="min-height:auto"> incluir recebimentos que nunca foram lançados nas abas PA/VET</label>
       <input type="file" id="aOld" accept=".xlsx,.xlsm,.xls">
       <div id="aOldOut"></div>
@@ -218,10 +245,17 @@ function vAdmin() {
       </div>
       <div><button class="btn primary" id="aSaveCfg">Salvar listas</button></div>
     </div>
-    <div class="card stack"><h3>Motoristas (${fNum(S.motoristas.length)})</h3>
-      <div class="muted small">Importados da aba "Lista de Motoristas". Formato para editar: NOME;PLACA;TRANSPORTADORA (uma linha por motorista).</div>
-      <textarea id="lMot" style="min-height:180px">${esc(S.motoristas.map((m) => [m.nome, m.placa, m.transp].join(';')).join('\n'))}</textarea>
-      <div><button class="btn" id="aSaveMot">Salvar motoristas</button></div>
+    <div class="card stack"><h3>Base de motoristas e veículos</h3>
+      <div class="${S.motMeta ? 'alert info' : 'alert warn'}">${S.motMeta ? `<b>${fNum(S.motMeta.ativos)}</b> veículos ativos (de ${fNum(S.motMeta.total)}) · arquivo <b>${esc(S.motMeta.arquivo)}</b> em ${new Date(S.motMeta.atualizadoEm).toLocaleString('pt-BR')}` : (S.motoristas.length ? `${fNum(S.motoristas.length)} motoristas (lista antiga). Envie o relatório de veículos do TMS para atualizar.` : 'Nenhuma base carregada. Envie o relatório de veículos do TMS.')}</div>
+      <div class="muted small">Envie o <b>relatório de veículos</b> exportado do TMS (.csv ou .xlsx). Ele <b>substitui</b> a lista inteira: motorista, placa, transportadora, tipo de veículo e se está ativo. No Registrar aparecem só os ativos; digitando o nome ou a placa, o resto é preenchido sozinho.</div>
+      <input type="file" id="aMotFile" accept=".csv,.xlsx,.xls">
+      <div id="aMotOut"></div>
+      ${S.motoristas.length ? `<label>Buscar na base<input id="aMotQ" placeholder="nome, placa ou transportadora"></label><div id="aMotList"></div>` : ''}
+    </div>
+    <div class="card stack"><h3>Catálogo de itens (ocorrências)</h3>
+      <div class="alert info"><b>${fNum((S.itens || []).length)}</b> itens no catálogo${S.itensMeta ? ` · arquivo <b>${esc(S.itensMeta.arquivo)}</b> em ${new Date(S.itensMeta.atualizadoEm).toLocaleString('pt-BR')}` : ' · catálogo padrão (Catalogo_Espelho_itens_novos)'}</div>
+      <div class="muted small">Envie uma planilha com as colunas <b>Código Produto</b>, <b>Descrição Produto</b> e <b>Peso</b> (é lida a primeira aba que tiver essas colunas). Substitui o catálogo inteiro.</div>
+      <input type="file" id="aItFile" accept=".xlsx,.xls,.csv"><div id="aItOut"></div>
     </div>
     <div class="card stack"><h3>Zona de perigo</h3>
       <div class="muted small">Apaga todos os registros (reentregas, NFDs, ocorrências, canceladas). O consolidado é mantido.</div>
@@ -235,9 +269,48 @@ function vAdmin() {
     const cfg = { motivosReentrega: lines('#lMotR').map((s) => s.toUpperCase()), transportadoras: lines('#lTr').map((s) => s.toUpperCase()), motivosNFD: lines('#lMotN').map((s) => s.toUpperCase()), motivosOcorrencia: lines('#lMotO').map((s) => s.toUpperCase()), conferentes: lines('#lConf').map((s) => s.toUpperCase()), turnoHoras: th, turnos: Object.keys(th).length ? Object.keys(th) : S.cfg.turnos };
     try { S.cfg = (await api('cfg', { cfg })).cfg; toast('Listas salvas'); } catch (e) { toast(e.message, true); }
   };
-  $('#aSaveMot').onclick = async () => {
-    const mot = lines('#lMot').map((l) => { const [nome, placa, transp] = l.split(';').map((s) => (s || '').trim().toUpperCase()); return { nome, placa, transp: normTransp(transp) || transp }; }).filter((m) => m.nome);
-    try { await api('motoristas', { motoristas: mot }); S.motoristas = mot; toast(mot.length + ' motoristas salvos'); } catch (e) { toast(e.message, true); }
+  const listaMot = () => {
+    const q = strip($('#aMotQ')?.value || ''); const el = $('#aMotList'); if (!el) return;
+    const l = S.motoristas.filter((m) => !q || strip([m.nome, m.placa, m.transp, m.veiculo].join(' ')).includes(q));
+    el.innerHTML = `<div class="tbl-wrap" style="max-height:320px"><table><thead><tr><th>Motorista</th><th>Placa</th><th>Transp.</th><th>Veículo</th><th>Ativo</th></tr></thead><tbody>${l.slice(0, 300).map((m) => `<tr${m.ativo === false ? ' style="color:var(--ink3)"' : ''}><td>${esc(m.nome)}</td><td>${esc(m.placa)}</td><td>${esc(m.transp)}</td><td>${esc(m.veiculo || '')}</td><td>${m.ativo === false ? 'Não' : 'Sim'}</td></tr>`).join('')}</tbody></table></div><div class="muted small">${fNum(l.length)} encontrado(s)${l.length > 300 ? ' · mostrando 300' : ''}</div>`;
+  };
+  $('#aMotQ') && ($('#aMotQ').oninput = listaMot); listaMot();
+  $('#aItFile').onchange = async (e) => {
+    const f = e.target.files[0]; if (!f) return; const out = $('#aItOut'); out.innerHTML = '<div class="muted">Lendo arquivo…</div>';
+    try {
+      let rows = null, h = null;
+      if (/\.csv$/i.test(f.name)) { rows = await readTable(f); h = header(rows, 'Código Produto', 5); }
+      else { const wb = await readFile(f); for (const n of wb.SheetNames) { const R = sheetRows(wb.Sheets[n]); const hh = header(R, 'Código Produto', 5); if (hh) { rows = R; h = hh; break; } } }
+      if (!h) throw new Error('Não achei a coluna "Código Produto".');
+      const c = h.col; const seen = new Set(); const itens = [];
+      for (let i = h.hi + 1; i < rows.length; i++) { const r = rows[i]; const cod = String(r[c['CODIGO PRODUTO']] ?? '').trim(); if (!cod || seen.has(cod)) continue; seen.add(cod); itens.push([cod, String(r[c['DESCRICAO PRODUTO']] ?? '').trim(), parseNum(r[c['PESO']]) ?? null]); }
+      if (!itens.length) throw new Error('Nenhum item encontrado.');
+      const j = await api('itens', { itens, arquivo: f.name }); S.itens = itens; S.itensMeta = j.meta;
+      toast(`Catálogo atualizado: ${fNum(itens.length)} itens`); vAdmin();
+    } catch (err) { out.innerHTML = `<div class="alert crit">${esc(err.message)}</div>`; }
+  };
+  $('#aMotFile').onchange = async (e) => {
+    const f = e.target.files[0]; if (!f) return; const out = $('#aMotOut'); out.innerHTML = '<div class="muted">Lendo arquivo…</div>';
+    try {
+      const { motoristas, ign } = parseVeiculos(await readTable(f));
+      if (!motoristas.length) throw new Error('Nenhum motorista encontrado no arquivo.');
+      const porT = {}; motoristas.forEach((m) => { const o = (porT[m.transp || '(sem)'] = porT[m.transp || '(sem)'] || { a: 0, i: 0 }); m.ativo ? o.a++ : o.i++; });
+      out.innerHTML = `<div class="tbl-wrap" style="max-height:none"><table><thead><tr><th>Transportadora</th><th class="num">Ativos</th><th class="num">Inativos</th></tr></thead><tbody>${Object.entries(porT).sort((a, b) => b[1].a - a[1].a).map(([t, o]) => `<tr><td>${esc(t)}</td><td class="num">${fNum(o.a)}</td><td class="num">${fNum(o.i)}</td></tr>`).join('')}</tbody></table></div>
+        <div class="muted small">${fNum(motoristas.length)} veículos lidos · ${fNum(ign.ficticias)} ignorados (placas fictícias / "baixar pendências" / sem motorista).</div>
+        <div class="row"><button class="btn primary" id="aMotGo">Substituir base de motoristas</button></div>`;
+      $('#aMotGo').onclick = async () => {
+        $('#aMotGo').disabled = true;
+        try {
+          const j = await api('motoristas', { motoristas, arquivo: f.name });
+          // novas transportadoras entram na lista do app
+          const novas = [...new Set(motoristas.filter((m) => m.ativo && m.transp).map((m) => m.transp))].filter((t) => !S.cfg.transportadoras.includes(t));
+          if (novas.length) S.cfg = (await api('cfg', { cfg: { transportadoras: [...S.cfg.transportadoras, ...novas] } })).cfg;
+          S.motoristas = motoristas; S.motMeta = j.meta;
+          toast(`Base atualizada: ${fNum(j.meta.ativos)} veículos ativos${novas.length ? ' · novas transportadoras: ' + novas.join(', ') : ''}`);
+          vAdmin();
+        } catch (err) { toast(err.message, true); $('#aMotGo').disabled = false; }
+      };
+    } catch (err) { out.innerHTML = `<div class="alert crit">${esc(err.message)}</div>`; }
   };
   $('#aWipe').onclick = async () => {
     const c = prompt('Isso apaga TODOS os registros. Digite APAGAR para confirmar:'); if (c !== 'APAGAR') return;
@@ -273,12 +346,11 @@ function vAdmin() {
       const byT = {}; p.recs.forEach((r) => { byT[r.tipo] = (byT[r.tipo] || 0) + 1; });
       const relRows = Object.entries(p.rel).map(([k, v]) => `<tr><td>${esc(k)}</td><td>${Object.entries(v).map(([a, b]) => `${a}: <b>${fNum(b)}</b>`).join(' · ')}</td></tr>`).join('');
       out.innerHTML = `<div class="tbl-wrap" style="max-height:none"><table><thead><tr><th>Aba</th><th>Resultado da leitura</th></tr></thead><tbody>${relRows}</tbody></table></div>
-        <div class="muted small" style="margin-top:6px">Será importado: ${Object.entries(byT).map(([k, v]) => `${TIPOS[k]}: <b>${fNum(v)}</b>`).join(' · ')} · Motoristas: <b>${fNum(p.motoristas.length)}</b>. Datas inválidas (ex.: 1922, 3099) são ignoradas.</div>
+        <div class="muted small" style="margin-top:6px">Será importado: ${Object.entries(byT).map(([k, v]) => `${TIPOS[k]}: <b>${fNum(v)}</b>`).join(' · ')}. Datas inválidas (ex.: 1922, 3099) são ignoradas.</div>
         <div class="row" style="margin-top:8px"><button class="btn primary" id="aOldGo">Importar</button></div><div class="progress hidden" id="aOldPg"><div></div></div><div id="aOldRes"></div>`;
       $('#aOldGo').onclick = async () => {
         $('#aOldGo').disabled = true; $('#aOldPg').classList.remove('hidden');
         try {
-          if (p.motoristas.length) { await api('motoristas', { motoristas: p.motoristas }); S.motoristas = p.motoristas; }
           const CH = 800; let cz = 0;
           for (let i = 0; i < p.recs.length; i += CH) { const j = await api('import', { recs: p.recs.slice(i, i + CH) }); cz += j.cruzados; $('#aOldPg div').style.width = Math.round((i + CH) / p.recs.length * 100) + '%'; }
           invalidate();

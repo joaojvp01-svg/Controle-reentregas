@@ -3,6 +3,7 @@
 const crypto = require('crypto');
 const { getRedis } = require('../lib/redis');
 const { storeImage, readImage } = require('../lib/blob');
+const ITENS_PADRAO = require('../lib/itens-padrao.json');
 
 const SECRET = () => process.env.AUTH_SECRET || process.env.ADMIN_PASSWORD || 'troque-este-segredo';
 const TTL_HORAS = 14;
@@ -134,13 +135,20 @@ async function getRefs(r, refs) {
 function clean(rec) {
   const allowed = ['id', 'tipo', 'canal', 'canalAuto', 'nf', 'data', 'hora', 'motivo', 'valor', 'peso', 'motorista', 'placa',
     'transportadora', 'conferente', 'turno', 'status', 'obs', 'nfd', 'dataEmissao', 'dataEntrega', 'orEntrada',
-    'dataRetornoEstoque', 'descontoMotorista', 'fotoDoc', 'fotosAvaria', 'cliente', 'rep', 'pedido', 'dtFat', 'cidade', 'bairro', 'origem', 'dataLanc', 'abaOrigem'];
+    'dataRetornoEstoque', 'descontoMotorista', 'fotoDoc', 'fotosAvaria', 'itens', 'cliente', 'rep', 'pedido', 'dtFat', 'cidade', 'bairro', 'origem', 'dataLanc', 'abaOrigem'];
   const o = {};
   for (const k of allowed) if (rec[k] !== undefined && rec[k] !== null && rec[k] !== '') o[k] = rec[k];
   if (o.nf != null) o.nf = String(o.nf).replace(/\D/g, '').replace(/^0+/, '');
   ['valor', 'peso'].forEach((k) => { if (o[k] != null) { const n = Number(o[k]); o[k] = isFinite(n) ? n : undefined; } });
   if (o.descontoMotorista && !['TOTAL', 'PARCIAL', 'SEM DESCONTO'].includes(o.descontoMotorista)) delete o.descontoMotorista;
   if (o.fotoDoc && typeof o.fotoDoc !== 'string') delete o.fotoDoc;
+  if (o.itens) {
+    o.itens = (Array.isArray(o.itens) ? o.itens : []).filter((x) => x && x.cod).slice(0, 60).map((x) => ({
+      cod: String(x.cod).slice(0, 40), desc: String(x.desc || '').slice(0, 200), qtd: Math.max(0, Number(x.qtd) || 0),
+      peso: x.peso == null ? null : Number(x.peso) || null, fotos: (Array.isArray(x.fotos) ? x.fotos : []).filter((u) => typeof u === 'string').slice(0, 10)
+    }));
+    if (!o.itens.length) delete o.itens;
+  }
   if (o.fotosAvaria) { o.fotosAvaria = (Array.isArray(o.fotosAvaria) ? o.fotosAvaria : []).filter((f) => f && typeof f.url === 'string').slice(0, 20).map((f) => ({ url: f.url, desc: String(f.desc || '').slice(0, 300) })); if (!o.fotosAvaria.length) delete o.fotosAvaria; }
   return o;
 }
@@ -200,10 +208,11 @@ module.exports = async (req, res) => {
 
     switch (action) {
       case 'bootstrap': {
-        const [cfg, mot, meta, months, pendN] = await Promise.all([
-          getCfg(r), r.get('mot'), r.get('fatmeta'), r.smembers('months'), r.hlen('pend')
+        const lite = q.lite === '1';
+        const [cfg, mot, meta, months, pendN, motMeta, itens, itensMeta] = await Promise.all([
+          getCfg(r), lite ? null : r.get('mot'), r.get('fatmeta'), r.smembers('months'), r.hlen('pend'), r.get('motmeta'), lite ? null : r.get('itens'), r.get('itensmeta')
         ]);
-        return send(200, { cfg, motoristas: P(mot) || [], fatMeta: P(meta), months: (months || []).sort(), pendentes: pendN || 0, user: { perfil: user.r, nome: user.n } });
+        return send(200, { cfg, motoristas: lite ? undefined : P(mot) || [], motMeta: P(motMeta), itens: lite ? undefined : P(itens) || ITENS_PADRAO, itensMeta: P(itensMeta), fatMeta: P(meta), months: (months || []).sort(), pendentes: pendN || 0, user: { perfil: user.r, nome: user.n } });
       }
       case 'cfg': {
         if (needAdm()) return;
@@ -213,8 +222,19 @@ module.exports = async (req, res) => {
       }
       case 'motoristas': {
         if (needAdm()) return;
-        await r.set('mot', S(body.motoristas || []));
-        return send(200, { ok: true, n: (body.motoristas || []).length });
+        const lista = (body.motoristas || []).filter((m) => m && m.nome).slice(0, 5000);
+        await r.set('mot', S(lista));
+        const meta = { total: lista.length, ativos: lista.filter((m) => m.ativo !== false).length, arquivo: body.arquivo || '', atualizadoEm: nowISO(), por: user.n };
+        await r.set('motmeta', S(meta));
+        return send(200, { ok: true, n: lista.length, meta });
+      }
+      case 'itens': {
+        if (needAdm()) return;
+        const lista = (body.itens || []).filter((x) => Array.isArray(x) && x[0]).slice(0, 10000).map((x) => [String(x[0]).trim(), String(x[1] || '').trim(), x[2] == null || x[2] === '' ? null : Number(x[2])]);
+        await r.set('itens', S(lista));
+        const meta = { total: lista.length, arquivo: body.arquivo || '', atualizadoEm: nowISO(), por: user.n };
+        await r.set('itensmeta', S(meta));
+        return send(200, { meta });
       }
       case 'list': {
         const ms = String(q.m || '').split(',').filter(Boolean).slice(0, 36);

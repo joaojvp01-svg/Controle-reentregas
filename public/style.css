@@ -239,3 +239,22 @@ main.full{max-width:none;padding:0;height:100vh;overflow:hidden}
 .lightbox img{max-width:92vw;max-height:80vh;border-radius:8px}
 .lightbox figcaption{color:#fff;font-size:14px;font-weight:600}
 .lb-open{color:#cfe1fa;font-size:13px}
+
+/* itens da ocorrência (parcial) */
+.it-card{border:1px solid var(--line2);border-radius:10px;padding:10px;background:#fff;display:flex;flex-direction:column;gap:6px}
+.it-card.bad{border-color:var(--crit)}
+.it-top{display:flex;gap:8px;align-items:flex-end}
+.it-top .grow{flex:1;min-width:0}
+.it-top .it-q{width:90px}
+.it-n{width:24px;height:24px;border-radius:50%;background:var(--pri);color:#fff;font-weight:800;font-size:12px;display:grid;place-items:center;margin-bottom:8px;flex-shrink:0}
+.it-ph{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+.it-th{position:relative;display:inline-block}
+.it-th .ph-th{width:64px;height:64px}
+.itPhDel{position:absolute;top:-6px;right:-6px;width:20px;height:20px;border-radius:50%;border:0;background:var(--crit);color:#fff;font-size:11px;cursor:pointer;line-height:20px;padding:0}
+.ph-add.sm{padding:8px 12px;font-size:13px;border-width:1px;flex:1;min-width:150px}
+.it-tbl{font-size:12px;margin:6px 0;border:1px solid var(--line);border-radius:8px}
+.it-tbl th{position:static;background:#f6f6f3}
+.it-tbl td,.it-tbl th{padding:4px 8px}
+.it-tbl{width:100%;table-layout:auto}
+.it-tbl td:nth-child(2){white-space:normal}
+.tl-item > div{min-width:0}

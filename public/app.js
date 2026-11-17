@@ -81,7 +81,7 @@ function logout() {
 
 async function boot() {
   const j = await api('bootstrap');
-  Object.assign(S, { cfg: j.cfg, motoristas: j.motoristas, fatMeta: j.fatMeta, months: j.months, user: j.user });
+  Object.assign(S, { cfg: j.cfg, motoristas: j.motoristas || [], motMeta: j.motMeta, itens: j.itens || [], itensMeta: j.itensMeta, fatMeta: j.fatMeta, months: j.months, user: j.user });
   $('#login').classList.add('hidden'); $('#app').classList.remove('hidden');
   $('#whoName').textContent = `${j.user.nome} · ${j.user.perfil === 'adm' ? 'ADM' : 'Operação'}`;
   $$('#nav [data-adm]').forEach((b) => b.classList.toggle('hidden', !isAdm()));
@@ -101,7 +101,7 @@ function go(v) {
 // ---------- dados ----------
 async function loadAll(force) {
   if (S.cache && !force) return S.cache;
-  const b = await api('bootstrap'); S.months = b.months; setPend(b.pendentes);
+  const b = await api('bootstrap?lite=1'); S.months = b.months; setPend(b.pendentes);
   const out = []; const ms = S.months.slice();
   const groups = []; for (let i = 0; i < ms.length; i += 4) groups.push(ms.slice(i, i + 4));
   await Promise.all(groups.map(async (g) => { const j = await api('list?m=' + g.join(',')); out.push(...j.recs); }));
@@ -124,15 +124,19 @@ function motivosDo(tipo) {
   return tipo === 'NFD' ? c.motivosNFD : tipo === 'OCORRENCIA' ? c.motivosOcorrencia : c.motivosReentrega;
 }
 const opts = (arr, sel, blank = true) => (blank ? '<option value=""></option>' : '') + arr.map((x) => `<option ${x === sel ? 'selected' : ''}>${esc(x)}</option>`).join('');
+const motAtivos = () => (S.motoristas || []).filter((m) => m.ativo !== false);
 function datalists() {
-  return `<datalist id="dlMot">${S.motoristas.map((m) => `<option value="${esc(m.nome)}">${esc(m.placa || '')} · ${esc(m.transp || '')}</option>`).join('')}</datalist>
+  const at = motAtivos();
+  return `<datalist id="dlMot">${[...new Map(at.map((m) => [m.nome, m])).values()].map((m) => `<option value="${esc(m.nome)}">${esc(at.filter((x) => x.nome === m.nome).map((x) => x.placa).join(', '))} · ${esc(m.transp || '')}</option>`).join('')}</datalist>
+  <datalist id="dlPlaca">${at.map((m) => `<option value="${esc(m.placa)}">${esc(m.nome)} · ${esc(m.veiculo || '')}</option>`).join('')}</datalist>
   <datalist id="dlConf">${(S.cfg.conferentes || []).map((c) => `<option value="${esc(c)}">`).join('')}</datalist>`;
 }
 
 // ============ REGISTRAR ============
 let regTipo = 'REENTREGA';
-const FOTOS = { doc: null, avarias: [], desconto: '' };
-const resetFotos = () => { FOTOS.doc = null; FOTOS.avarias = []; FOTOS.desconto = ''; };
+const FOTOS = { doc: null, avarias: [], desconto: '', itens: [] };
+const resetFotos = () => { FOTOS.doc = null; FOTOS.avarias = []; FOTOS.desconto = ''; FOTOS.itens = []; };
+const novoItem = () => ({ cod: '', desc: '', peso: null, qtd: '', fotos: [], txt: '' });
 function vRegistrar() {
   const m = $('#main');
   m.innerHTML = `
@@ -150,8 +154,9 @@ function vRegistrar() {
         </div>
         <div class="row only-mot">
           <label style="flex:2">Motorista<input id="fMot" list="dlMot" placeholder="Digite o nome" autocomplete="off"></label>
-          <label>Placa<input id="fPlaca" placeholder="ABC1D23"></label>
+          <label>Placa<input id="fPlaca" list="dlPlaca" placeholder="ABC1D23" autocomplete="off"></label>
         </div>
+        <div id="motInfo" class="muted small"></div>
         <div class="row">
           <label class="only-mot">Transportadora<select id="fTransp">${opts(S.cfg.transportadoras, '')}</select></label>
           <label>Conferente<input id="fConf" list="dlConf" value="${esc(S.user.nome)}"></label>
@@ -173,9 +178,19 @@ function vRegistrar() {
     </div>`;
   $$('#tipoSeg button').forEach((b) => b.onclick = () => { regTipo = b.dataset.t; resetFotos(); $$('#tipoSeg button').forEach((x) => x.classList.toggle('on', x === b)); renderTipoCampos(); });
   $('#fHora').onchange = () => { const t = turnoDe($('#fHora').value); if (t) $('#fTurno').value = t; };
+  const setTransp = (t) => { if (!t) return; if (!$$('#fTransp option').some((o) => o.value === t)) $('#fTransp').insertAdjacentHTML('beforeend', `<option>${esc(t)}</option>`); $('#fTransp').value = t; };
+  const mostra = (m, n) => { $('#motInfo').textContent = m ? `${m.veiculo || ''}${m.transp ? ' · ' + m.transp : ''}${n > 1 ? ` · ${n} veículos cadastrados para este motorista` : ''}` : ''; };
   $('#fMot').onchange = () => {
-    const mm = S.motoristas.find((x) => strip(x.nome) === strip($('#fMot').value));
-    if (mm) { if (mm.placa) $('#fPlaca').value = mm.placa; if (mm.transp && S.cfg.transportadoras.includes(mm.transp)) $('#fTransp').value = mm.transp; }
+    const all = motAtivos().filter((x) => strip(x.nome) === strip($('#fMot').value));
+    if (!all.length) { mostra(null); return; }
+    $('#fMot').value = all[0].nome;
+    if (all.length === 1 || !all.some((x) => x.placa === $('#fPlaca').value.trim().toUpperCase())) $('#fPlaca').value = all[0].placa || '';
+    setTransp(all[0].transp); mostra(all[0], all.length);
+  };
+  $('#fPlaca').onchange = () => {
+    const pl = $('#fPlaca').value.replace(/[\s-]/g, '').toUpperCase(); $('#fPlaca').value = pl;
+    const m = motAtivos().find((x) => x.placa === pl) || (S.motoristas || []).find((x) => x.placa === pl);
+    if (m) { $('#fMot').value = m.nome; setTransp(m.transp); mostra(m, motAtivos().filter((x) => x.nome === m.nome).length); }
   };
   $('#fNF').addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); lookupNF(true); } });
   $('#fNF').addEventListener('blur', () => lookupNF(false));
@@ -197,12 +212,21 @@ function renderTipoCampos() {
     <div class="row"><label>Motivo<select id="fMotivo">${opts(motivosDo(t), '')}</select></label><label>Data da entrega<input type="date" id="fEntrega" value="${todayISO()}"></label></div>`;
   if (t === 'OCORRENCIA') h += `
     <div class="fld"><div class="fld-l">Desconto do motorista</div><div class="seg seg-full" id="fDesc">${DESCONTOS.map((d) => `<button type="button" data-d="${d}" class="${FOTOS.desconto === d ? 'on' : ''}">${DESC_LB[d]}</button>`).join('')}</div></div>`;
-  if (t === 'NFD' || t === 'OCORRENCIA') h += `
-    <div class="fld"><div class="fld-l">Foto da ${t === 'NFD' ? 'NFD' : 'ocorrência'}</div><div id="fDocBox"></div></div>
+  if (t === 'OCORRENCIA') h += `<div id="ocBox" class="stack"></div>
+    <datalist id="dlItens">${(S.itens || []).map((x) => `<option value="${esc(x[0] + ' — ' + x[1])}">`).join('')}</datalist>`;
+  if (t === 'NFD') h += `
+    <div class="fld"><div class="fld-l">Foto da NFD</div><div id="fDocBox"></div></div>
     <div class="fld"><div class="fld-l">Fotos de avarias <span class="muted">(opcional · uma descrição por foto)</span></div><div id="fAvBox"></div></div>`;
   $('#tipoCampos').innerHTML = h;
-  if (t === 'OCORRENCIA') $$('#fDesc button').forEach((b) => b.onclick = () => { FOTOS.desconto = b.dataset.d; $$('#fDesc button').forEach((x) => x.classList.toggle('on', x === b)); });
-  if (t === 'NFD' || t === 'OCORRENCIA') renderFotos();
+  if (t === 'OCORRENCIA') {
+    $$('#fDesc button').forEach((b) => b.onclick = () => {
+      FOTOS.desconto = b.dataset.d; $$('#fDesc button').forEach((x) => x.classList.toggle('on', x === b));
+      if (FOTOS.desconto === 'PARCIAL' && !FOTOS.itens.length) FOTOS.itens.push(novoItem());
+      renderOc();
+    });
+    renderOc();
+  }
+  if (t === 'NFD') renderFotos();
   $('#fNF').placeholder = t === 'NFD' ? 'NF referenciada (Enter)' : t === 'OCORRENCIA' ? 'NF de origem (Enter)' : 'Digite e tecle Enter';
   if (S._lastLookup) showNFInfo(S._lastLookup);
 }
@@ -262,28 +286,80 @@ async function compressImg(file, max = 1600, q = 0.72) {
 const fotoSrc = (u) => (u && u.startsWith('/api/foto') ? u + '&t=' + encodeURIComponent(S.token || '') : u);
 async function enviarFoto(file) { const data = await compressImg(file); const j = await api('upload', { data }); return j.url; }
 function renderFotos() {
-  const doc = $('#fDocBox'), av = $('#fAvBox'); if (!doc) return;
-  doc.innerHTML = FOTOS.doc ? `<div class="ph-one"><img src="${esc(fotoSrc(FOTOS.doc))}" class="ph-th" data-full="${esc(fotoSrc(FOTOS.doc))}"><button type="button" class="btn sm" id="fDocDel">Remover</button></div>`
+  const doc = $('#fDocBox'), av = $('#fAvBox'); if (!av) return;
+  if (doc) doc.innerHTML = FOTOS.doc ? `<div class="ph-one"><img src="${esc(fotoSrc(FOTOS.doc))}" class="ph-th" data-full="${esc(fotoSrc(FOTOS.doc))}"><button type="button" class="btn sm" id="fDocDel">Remover</button></div>`
     : `<label class="ph-add"><input type="file" accept="image/*" id="fDocIn" hidden>📷 Tirar / escolher foto</label>`;
   av.innerHTML = `<div class="ph-list">${FOTOS.avarias.map((a, i) => `<div class="ph-item"><img src="${esc(fotoSrc(a.url))}" class="ph-th" data-full="${esc(fotoSrc(a.url))}" data-desc="${esc(a.desc)}">
-      <input class="ph-desc" data-i="${i}" placeholder="Descreva a avaria (ex.: saco rasgado, 2 un.)" value="${esc(a.desc)}"><button type="button" class="btn sm ph-del" data-i="${i}">✕</button></div>`).join('')}</div>
-    <label class="ph-add"><input type="file" accept="image/*" multiple id="fAvIn" hidden>➕ Adicionar fotos de avaria</label>`;
+      <input class="ph-desc" data-i="${i}" placeholder="${$('#ocBox') ? 'Descrição da foto (opcional)' : 'Descreva a avaria (ex.: saco rasgado, 2 un.)'}" value="${esc(a.desc)}"><button type="button" class="btn sm ph-del" data-i="${i}">✕</button></div>`).join('')}</div>
+    <label class="ph-add"><input type="file" accept="image/*" multiple id="fAvIn" hidden>${$('#ocBox') ? '📷 Adicionar fotos da ocorrência' : '➕ Adicionar fotos de avaria'}</label>`;
   const up = async (files, onUrl, box) => {
     FOTOS.enviando = (FOTOS.enviando || 0) + files.length; box.insertAdjacentHTML('beforeend', '<div class="muted small ph-wait">Enviando foto(s)…</div>');
     for (const f of files) { try { onUrl(await enviarFoto(f)); } catch (e) { toast('Falha ao enviar foto: ' + e.message, true); } finally { FOTOS.enviando--; } }
     renderFotos();
   };
+  FOTOS._up = up;
   $('#fDocIn') && ($('#fDocIn').onchange = (e) => up([...e.target.files].slice(0, 1), (u) => { FOTOS.doc = u; }, doc));
   $('#fDocDel') && ($('#fDocDel').onclick = () => { FOTOS.doc = null; renderFotos(); });
   $('#fAvIn').onchange = (e) => up([...e.target.files].slice(0, 15), (u) => { FOTOS.avarias.push({ url: u, desc: '' }); }, av);
   $$('.ph-desc', av).forEach((i) => i.oninput = () => { FOTOS.avarias[+i.dataset.i].desc = i.value; });
   $$('.ph-del', av).forEach((b) => b.onclick = () => { FOTOS.avarias.splice(+b.dataset.i, 1); renderFotos(); });
 }
+// ---- ocorrência: Total / Sem desconto = fotos; Parcial = itens (código, qtd, foto) ----
+function acharItem(txt) {
+  const t = String(txt || '').trim(); if (!t) return null;
+  const cod = t.split(' — ')[0].trim().toUpperCase();
+  const L = S.itens || []; const T = strip(t);
+  return L.find((x) => x[0].toUpperCase() === cod) || L.find((x) => strip(x[0] + ' — ' + x[1]) === T) || L.find((x) => strip(x[1]) === T)
+    || (() => { const c = L.filter((x) => strip(x[1]).includes(T) || x[0].toUpperCase().includes(cod)); return c.length === 1 ? c[0] : null; })();
+}
+function renderOc() {
+  const box = $('#ocBox'); if (!box) return;
+  const d = FOTOS.desconto;
+  if (!d) { box.innerHTML = '<div class="muted small">Escolha o desconto do motorista para continuar.</div>'; return; }
+  if (d !== 'PARCIAL') {
+    box.innerHTML = `<div class="fld"><div class="fld-l">Fotos da ocorrência ${d === 'TOTAL' ? '<span class="muted">(desconto da ocorrência toda · pelo menos 1 foto)</span>' : '<span class="muted">(opcional)</span>'}</div><div id="fAvBox"></div></div>`;
+    renderFotos(); return;
+  }
+  const kg = FOTOS.itens.reduce((s, it) => s + (Number(it.qtd) || 0) * (it.peso || 0), 0);
+  box.innerHTML = `<div class="fld-l">Itens com desconto <span class="muted">(item, quantidade e foto de cada um)</span></div>
+    ${FOTOS.itens.map((it, i) => `<div class="it-card ${it.txt && !it.cod ? 'bad' : ''}" data-i="${i}">
+      <div class="it-top"><span class="it-n">${i + 1}</span>
+        <label class="grow">Item (código ou descrição)<input class="itSel" list="dlItens" value="${esc(it.cod ? it.cod + ' — ' + it.desc : it.txt)}" placeholder="Ex.: 3000-004-PP ou PREMIER FORM" autocomplete="off"></label>
+        <label class="it-q">Qtd<input class="itQtd" type="number" min="1" step="1" inputmode="numeric" value="${esc(it.qtd)}"></label>
+        <button type="button" class="btn sm itDel" title="Remover item">✕</button></div>
+      <div class="muted small">${it.cod ? `${esc(it.desc)}${it.peso ? ` · ${fNum(it.peso, 1)} kg/un${it.qtd ? ` · <b>${fNum(it.peso * it.qtd, 1)} kg</b>` : ''}` : ''}` : (it.txt ? '<span style="color:var(--crit)">Item não encontrado no catálogo</span>' : '')}</div>
+      <div class="it-ph">${it.fotos.map((u, k) => `<span class="it-th"><img src="${esc(fotoSrc(u))}" class="ph-th" data-full="${esc(fotoSrc(u))}" data-desc="${esc(it.cod + ' × ' + (it.qtd || '?'))}"><button type="button" class="itPhDel" data-k="${k}" title="Remover foto">✕</button></span>`).join('')}
+        <label class="ph-add sm"><input type="file" accept="image/*" multiple class="itPhIn" hidden>📷 ${it.fotos.length ? 'Mais fotos' : 'Foto do item'}</label></div>
+    </div>`).join('')}
+    <button type="button" class="btn" id="itAdd">➕ Adicionar outro item</button>
+    ${FOTOS.itens.length ? `<div class="muted small">${FOTOS.itens.length} item(ns) · ${fNum(FOTOS.itens.reduce((s, it) => s + (Number(it.qtd) || 0), 0))} unidade(s)${kg ? ` · ${fNum(kg, 1)} kg` : ''}</div>` : ''}`;
+  $('#itAdd').onclick = () => { FOTOS.itens.push(novoItem()); renderOc(); $$('#ocBox .itSel').pop()?.focus(); };
+  $$('#ocBox .it-card').forEach((card) => {
+    const it = FOTOS.itens[+card.dataset.i];
+    $('.itSel', card).onchange = (e) => { const f = acharItem(e.target.value); it.txt = e.target.value; if (f) { it.cod = f[0]; it.desc = f[1]; it.peso = f[2]; } else { it.cod = ''; it.desc = ''; it.peso = null; } renderOc(); if (f) $$('#ocBox .itQtd')[+card.dataset.i]?.focus(); };
+    $('.itQtd', card).oninput = (e) => { it.qtd = e.target.value; };
+    $('.itQtd', card).onchange = () => renderOc();
+    $('.itDel', card).onclick = () => { FOTOS.itens.splice(+card.dataset.i, 1); renderOc(); };
+    $$('.itPhDel', card).forEach((b) => b.onclick = () => { it.fotos.splice(+b.dataset.k, 1); renderOc(); });
+    $('.itPhIn', card).onchange = async (e) => {
+      const files = [...e.target.files].slice(0, 10); FOTOS.enviando = (FOTOS.enviando || 0) + files.length;
+      card.insertAdjacentHTML('beforeend', '<div class="muted small">Enviando foto(s)…</div>');
+      for (const f of files) { try { it.fotos.push(await enviarFoto(f)); } catch (err) { toast('Falha ao enviar foto: ' + err.message, true); } finally { FOTOS.enviando--; } }
+      renderOc();
+    };
+  });
+}
+const nFotos = (r) => (r.fotoDoc ? 1 : 0) + (r.fotosAvaria || []).length + (r.itens || []).reduce((s, it) => s + (it.fotos || []).length, 0);
+function itensHTML(r) {
+  if (!r.itens || !r.itens.length) return '';
+  return `<table class="it-tbl"><thead><tr><th>Código</th><th>Item</th><th class="num">Qtd</th><th class="num">Kg</th></tr></thead><tbody>${r.itens.map((it) => `<tr><td><b>${esc(it.cod)}</b></td><td>${esc(it.desc)}</td><td class="num">${fNum(it.qtd)}</td><td class="num">${it.peso ? fNum(it.peso * it.qtd, 1) : ''}</td></tr>`).join('')}</tbody></table>`;
+}
 // galeria (miniaturas clicáveis) usada na consulta, edição e detalhes
 function galeriaHTML(r) {
   const it = [];
   if (r.fotoDoc) it.push({ url: r.fotoDoc, desc: 'Foto da ' + (r.tipo === 'NFD' ? 'NFD' : 'ocorrência') });
-  (r.fotosAvaria || []).forEach((a, i) => it.push({ url: a.url, desc: 'Avaria ' + (i + 1) + (a.desc ? ': ' + a.desc : '') }));
+  (r.fotosAvaria || []).forEach((a, i) => it.push({ url: a.url, desc: (r.tipo === 'OCORRENCIA' ? 'Ocorrência ' : 'Avaria ') + (i + 1) + (a.desc ? ': ' + a.desc : '') }));
+  (r.itens || []).forEach((x) => (x.fotos || []).forEach((u) => it.push({ url: u, desc: `${x.cod} × ${fNum(x.qtd)}${x.desc ? ' · ' + x.desc : ''}` })));
   if (!it.length) return '';
   return `<div class="gal">${it.map((x) => `<figure><img src="${esc(fotoSrc(x.url))}" class="ph-th" data-full="${esc(fotoSrc(x.url))}" data-desc="${esc(x.desc)}" loading="lazy"><figcaption>${esc(x.desc)}</figcaption></figure>`).join('')}</div>`;
 }
@@ -308,13 +384,20 @@ async function salvarRegistro() {
   if (t === 'REENTREGA') Object.assign(rec, { valor: numIn($('#fValor').value), peso: numIn($('#fPeso').value) });
   if (t === 'NFD') Object.assign(rec, { nfd: $('#fNFD').value.replace(/\D/g, ''), dataEmissao: $('#fEmissao').value, valor: numIn($('#fValor').value) });
   if (t === 'OCORRENCIA') Object.assign(rec, { dataEntrega: $('#fEntrega').value, descontoMotorista: FOTOS.desconto });
-  if (t === 'NFD' || t === 'OCORRENCIA') { if (FOTOS.doc) rec.fotoDoc = FOTOS.doc; if (FOTOS.avarias.length) rec.fotosAvaria = FOTOS.avarias.map((a) => ({ url: a.url, desc: a.desc.trim() })); }
+  if (t === 'NFD' || (t === 'OCORRENCIA' && FOTOS.desconto !== 'PARCIAL')) { if (FOTOS.doc) rec.fotoDoc = FOTOS.doc; if (FOTOS.avarias.length) rec.fotosAvaria = FOTOS.avarias.map((a) => ({ url: a.url, desc: a.desc.trim() })); }
+  if (t === 'OCORRENCIA' && FOTOS.desconto === 'PARCIAL') rec.itens = FOTOS.itens.filter((it) => it.cod || it.txt || it.qtd || it.fotos.length).map((it) => ({ cod: it.cod, desc: it.desc, peso: it.peso, qtd: Number(it.qtd) || 0, fotos: it.fotos, _txt: it.txt }));
   const faltando = [];
   if (!nf) faltando.push('NF');
   if (!rec.data) faltando.push('data');
   if (!rec.motivo) faltando.push('motivo');
   if (!rec.motorista) faltando.push('motorista');
   if (t === 'OCORRENCIA' && !rec.descontoMotorista) faltando.push('desconto do motorista');
+  if (t === 'OCORRENCIA' && rec.descontoMotorista === 'TOTAL' && !(rec.fotosAvaria || []).length) faltando.push('ao menos 1 foto da ocorrência');
+  if (t === 'OCORRENCIA' && rec.descontoMotorista === 'PARCIAL') {
+    if (!(rec.itens || []).length) faltando.push('ao menos 1 item');
+    (rec.itens || []).forEach((it, i) => { const n = `item ${i + 1}`; if (!it.cod) faltando.push(`${n}: código válido do catálogo`); if (!(it.qtd > 0)) faltando.push(`${n}: quantidade`); if (!it.fotos.length) faltando.push(`${n}: foto`); });
+    (rec.itens || []).forEach((it) => delete it._txt);
+  }
   if (FOTOS.enviando) return toast('Aguarde o envio das fotos terminar', true);
   if (t === 'NFD' && !rec.nfd) faltando.push('nº da NFD');
   if (faltando.length) return toast('Preencha: ' + faltando.join(', '), true);
@@ -406,6 +489,7 @@ function editModal(r, after) {
   openModal(`<h2>Editar ${TIPOS[r.tipo]} · NF ${esc(r.nf)}</h2>
     <div class="muted small" style="margin-bottom:10px">${r.cruzado ? `Consolidado: ${esc(r.cliente || '')} · canal ${esc(r.canalFat || '')} · ${esc(r.transpFat || '')}` : 'NF sem cruzamento no consolidado'} · criado por ${esc(r.criadoPor || '')} ${r.aprovadoPor ? '· aprovado por ' + esc(r.aprovadoPor) : ''}</div>
     <div class="grid g3">${campos.map(inp).join('')}</div>
+    ${itensHTML(r) ? `<div class="fld-l" style="margin-top:12px">Itens com desconto</div>${itensHTML(r)}` : ''}
     ${galeriaHTML(r) ? `<div class="fld-l" style="margin-top:12px">Fotos</div>${galeriaHTML(r)}` : ''}
     <div class="row" style="margin-top:14px"><button class="btn bad" id="mDel">Excluir</button><span class="spacer"></span><button class="btn" id="mCancel">Cancelar</button><button class="btn primary" id="mSave">Salvar</button></div>`);
   $('#mCancel').onclick = closeModal;
@@ -434,7 +518,7 @@ const RF = { de: null, ate: null, tipo: 'REENTREGA', status: '', transp: '', q: 
 const RCOLS = {
   REENTREGA: [['data', 'Data', '', 90], ['hora', 'Hora', '', 54, 'p3'], ['nf', 'NF', '', 76], ['_n', 'Vezes', 'num', 60], ['cliente', 'Cliente', 'wrap'], ['cidade', 'Cidade', 'wrap', 120, 'p3'], ['motivo', 'Motivo', 'wrap', 180], ['valor', 'Valor', 'num', 114], ['motorista', 'Motorista', 'wrap', 130, 'p2'], ['transportadora', 'Transp.', 'wrap', 100, 'p2']],
   NFD: [['data', 'Data', '', 90], ['hora', 'Hora', '', 54, 'p3'], ['nf', 'NF ref.', '', 76], ['nfd', 'Nº NFD', '', 70], ['cliente', 'Cliente', 'wrap'], ['motivo', 'Motivo', 'wrap', 120], ['valor', 'Valor NFD', 'num', 114], ['_fotos', 'Fotos', '', 64], ['motorista', 'Motorista', 'wrap', 130, 'p2'], ['transportadora', 'Transp.', 'wrap', 100, 'p2']],
-  OCORRENCIA: [['data', 'Data', '', 90], ['hora', 'Hora', '', 54, 'p3'], ['nf', 'NF origem', '', 80], ['cliente', 'Cliente', 'wrap'], ['cidade', 'Cidade', 'wrap', 120, 'p3'], ['motivo', 'Motivo', 'wrap', 130], ['descontoMotorista', 'Desc. motorista', '', 118], ['_fotos', 'Fotos', '', 64], ['motorista', 'Motorista', 'wrap', 130, 'p2'], ['transportadora', 'Transp.', 'wrap', 100, 'p2']],
+  OCORRENCIA: [['data', 'Data', '', 90], ['hora', 'Hora', '', 54, 'p3'], ['nf', 'NF origem', '', 80], ['cliente', 'Cliente', 'wrap'], ['cidade', 'Cidade', 'wrap', 120, 'p3'], ['motivo', 'Motivo', 'wrap', 130], ['descontoMotorista', 'Desc. motorista', '', 118], ['_itens', 'Itens', '', 92], ['_fotos', 'Fotos', '', 64], ['motorista', 'Motorista', 'wrap', 130, 'p2'], ['transportadora', 'Transp.', 'wrap', 100, 'p2']],
   CANCELADA: [['data', 'Processamento', '', 108], ['nf', 'NF', '', 76], ['cliente', 'Cliente', 'wrap'], ['cidade', 'Cidade', 'wrap', 120, 'p3'], ['valorNF', 'Valor NF', 'num', 114], ['orEntrada', 'OR entrada', '', 92, 'p2'], ['dataRetornoEstoque', 'Retorno estoque', '', 116]]
 };
 // informações secundárias: aparecem ao passar o mouse na linha
@@ -448,7 +532,8 @@ function detalhesHTML(r) {
     [r.status === 'RECUSADO' ? 'Recusado por' : 'Aprovado por', r.aprovadoPor && (r.aprovadoPor + (r.aprovadoEm ? ' · ' + new Date(r.aprovadoEm).toLocaleString('pt-BR', { dateStyle: 'short', timeStyle: 'short' }) : ''))],
     ['Motivo da recusa', r.status === 'RECUSADO' && (r.motivoRecusa || MOTIVO_RECUSA)],
     ['Desconto motorista', r.descontoMotorista && DESC_LB[r.descontoMotorista]],
-    ['Fotos', ((r.fotoDoc ? 1 : 0) + (r.fotosAvaria || []).length) || null],
+    ['Fotos', nFotos(r) || null],
+    ['Itens', (r.itens || []).map((x) => `${x.cod} × ${x.qtd}`).join(' · ')],
     ['Avarias', (r.fotosAvaria || []).map((a) => a.desc).filter(Boolean).join(' · ')],
     ['Consolidado', r.cruzado ? `${r.canalFat || ''} · ${r.transpFat || ''}` : 'NF não encontrada']
   ].filter(([, v]) => v);
@@ -520,7 +605,8 @@ function cellReg(r, [k, , cls]) {
   if (cls === 'wrap' && k !== 'cliente') return `<td class="wrap">${esc(v ?? '')}</td>`;
   if (k === 'data' || k === 'dataEmissao' || k === 'dataEntrega' || k === 'dataRetornoEstoque') return `<td>${fD(v)}</td>`;
   if (k === 'nf') return `<td><button class="link nfLink">${esc(v)}</button></td>`;
-  if (k === '_fotos') { const n = (r.fotoDoc ? 1 : 0) + (r.fotosAvaria || []).length; return `<td>${n ? `<span class="ph-badge">📷 ${n}</span>` : ''}</td>`; }
+  if (k === '_itens') { const it = r.itens || []; return `<td>${it.length ? `${it.length} · ${fNum(it.reduce((s, x) => s + (x.qtd || 0), 0))} un` : ''}</td>`; }
+  if (k === '_fotos') { const n = nFotos(r); return `<td>${n ? `<span class="ph-badge">📷 ${n}</span>` : ''}</td>`; }
   if (k === 'descontoMotorista') return `<td>${v ? `<span class="desc-tag d-${v.replace(' ', '')}">${DESC_LB[v] || esc(v)}</span>` : ''}</td>`;
   if (k === '_n') return `<td class="num">${v ? `<span class="times t${Math.min(v, 4)}">${v}×</span>` : ''}</td>`;
   if (k === 'valor' || k === 'valorNF') return `<td class="num">${fMoney(v)}</td>`;
@@ -627,7 +713,8 @@ function exportXlsx(rows, nome) {
     Tipo: TIPOS[r.tipo], Data: fD(r.data), Hora: r.hora || '', NF: r.nf, 'Retornos (histórico)': r._n || '', Canal: r.canal, Cliente: r.cliente || '', Representante: r.rep || '', Pedido: r.pedido || '',
     'Data faturamento': fD(r.dtFat), Cidade: r.cidade || '', Motivo: r.motivo || '', Valor: r.valor ?? '', Peso: r.peso ?? '', 'Nº NFD': r.nfd || '', 'Data emissão NFD': fD(r.dataEmissao), 'Data entrega': fD(r.dataEntrega),
     'OR entrada': r.orEntrada || '', 'Retorno estoque': fD(r.dataRetornoEstoque), Motorista: r.motorista || '', Placa: r.placa || '', Transportadora: r.transportadora || '', Conferente: r.conferente || '', Turno: r.turno || '',
-    'Desconto motorista': r.descontoMotorista ? DESC_LB[r.descontoMotorista] : '', 'Qtd fotos': (r.fotoDoc ? 1 : 0) + (r.fotosAvaria || []).length || '',
+    'Desconto motorista': r.descontoMotorista ? DESC_LB[r.descontoMotorista] : '', 'Qtd fotos': nFotos(r) || '', 'Itens (código × qtd)': (r.itens || []).map((x) => `${x.cod} × ${x.qtd}`).join('\n'),
+    'Itens (descrição)': (r.itens || []).map((x) => `${x.desc} × ${x.qtd}`).join('\n'),
     'Foto documento': /^https?:/.test(r.fotoDoc || '') ? r.fotoDoc : '', 'Fotos avaria (descrição | link)': (r.fotosAvaria || []).map((a) => (a.desc || 'sem descrição') + (/^https?:/.test(a.url) ? ' | ' + a.url : '')).join('\n'),
     Status: r.status, 'Aprovado por': r.aprovadoPor || '', Observação: r.obs || '', 'Cruzou consolidado': r.cruzado ? 'SIM' : 'NÃO', 'Aba origem (import)': r.abaOrigem || ''
   }));
@@ -655,6 +742,7 @@ function vConsulta() {
         <div><b>${TIPOS[h.tipo]}</b> ${pill(h.status)} ${h.motivo ? '· ' + esc(h.motivo) : ''}${h.nfd ? ' · NFD ' + esc(h.nfd) : ''}${h.orEntrada ? ' · OR ' + esc(h.orEntrada) : ''}
         <div class="muted small">${[h.motorista, h.transportadora, h.conferente && 'Conf.: ' + h.conferente, h.valor != null && fMoney(h.valor), h.obs].filter(Boolean).map(esc).join(' · ')}</div>
         ${h.descontoMotorista ? `<div class="small">Desconto do motorista: <b>${DESC_LB[h.descontoMotorista] || esc(h.descontoMotorista)}</b></div>` : ''}
+        ${itensHTML(h)}
         ${galeriaHTML(h)}
         ${isAdm() ? `<button class="link cEdit" data-id="${h.id}">editar</button>` : ''}</div></div>`).join('')}</div>` : '<div class="muted">Nenhum registro para esta NF.</div>'}</div></div>`;
       $$('.cEdit').forEach((b) => b.onclick = () => editModal(j.hist.find((x) => x.id === b.dataset.id), run));
