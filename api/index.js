@@ -54,7 +54,9 @@ const DEFAULT_CFG = {
   conferentes: [],
   turnos: ['1°', '2°', '3°'],
   // Faixas de horário para sugerir o turno automaticamente (HH:MM)
-  turnoHoras: { '1°': ['06:00', '14:20'], '2°': ['14:20', '22:00'], '3°': ['22:00', '06:00'] }
+  turnoHoras: { '1°': ['06:00', '14:20'], '2°': ['14:20', '22:00'], '3°': ['22:00', '06:00'] },
+  metaReentrega: 3, // % máximo de reentrega por motorista
+  minEntregasMeta: 10 // nº mínimo de NFs entregues para o motorista entrar no ranking
 };
 
 async function getCfg(r) {
@@ -209,10 +211,10 @@ module.exports = async (req, res) => {
     switch (action) {
       case 'bootstrap': {
         const lite = q.lite === '1';
-        const [cfg, mot, meta, months, pendN, motMeta, itens, itensMeta] = await Promise.all([
-          getCfg(r), lite ? null : r.get('mot'), r.get('fatmeta'), r.smembers('months'), r.hlen('pend'), r.get('motmeta'), lite ? null : r.get('itens'), r.get('itensmeta')
+        const [cfg, mot, meta, months, pendN, motMeta, itens, itensMeta, rotMeta] = await Promise.all([
+          getCfg(r), lite ? null : r.get('mot'), r.get('fatmeta'), r.smembers('months'), r.hlen('pend'), r.get('motmeta'), lite ? null : r.get('itens'), r.get('itensmeta'), r.get('rotmeta')
         ]);
-        return send(200, { cfg, motoristas: lite ? undefined : P(mot) || [], motMeta: P(motMeta), itens: lite ? undefined : P(itens) || ITENS_PADRAO, itensMeta: P(itensMeta), fatMeta: P(meta), months: (months || []).sort(), pendentes: pendN || 0, user: { perfil: user.r, nome: user.n } });
+        return send(200, { cfg, motoristas: lite ? undefined : P(mot) || [], motMeta: P(motMeta), itens: lite ? undefined : P(itens) || ITENS_PADRAO, itensMeta: P(itensMeta), rotMeta: P(rotMeta), fatMeta: P(meta), months: (months || []).sort(), pendentes: pendN || 0, user: { perfil: user.r, nome: user.n } });
       }
       case 'cfg': {
         if (needAdm()) return;
@@ -235,6 +237,32 @@ module.exports = async (req, res) => {
         const meta = { total: lista.length, arquivo: body.arquivo || '', atualizadoEm: nowISO(), por: user.n };
         await r.set('itensmeta', S(meta));
         return send(200, { meta });
+      }
+      case 'rot-upload': {
+        // rows: [[nf, motorista, placa, transp, data]] ; stats: { 'AAAA-MM-DD': { MOTORISTA: { n, t } } }
+        if (needAdm()) return;
+        const obj = {};
+        for (const row of body.rows || []) obj[String(row[0])] = S(row.slice(1));
+        await hsetChunk(r, 'nfmot', obj);
+        const st = body.stats || {}; const upd = {};
+        Object.keys(st).forEach((d) => { if (/^\d{4}-\d{2}-\d{2}$/.test(d)) upd[d] = S(st[d]); });
+        if (Object.keys(upd).length) await r.hset('rotstats', upd);
+        if (body.fim) {
+          const prev = P(await r.get('rotmeta')) || {};
+          const dias = Object.keys(upd).sort();
+          const meta = { de: [prev.de, dias[0]].filter(Boolean).sort()[0], ate: [prev.ate, dias[dias.length - 1]].filter(Boolean).sort().pop(), arquivo: body.arquivo, nfs: await r.hlen('nfmot'), atualizadoEm: nowISO(), por: user.n };
+          await r.set('rotmeta', S(meta));
+          return send(200, { meta });
+        }
+        return send(200, { n: Object.keys(obj).length });
+      }
+      case 'rot-stats': {
+        const de = String(q.de || ''), ate = String(q.ate || '');
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(de) || !/^\d{4}-\d{2}-\d{2}$/.test(ate)) return send(400, { error: 'Período inválido' });
+        const dias = []; for (let d = new Date(de + 'T12:00:00Z'); d.toISOString().slice(0, 10) <= ate && dias.length < 800; d.setUTCDate(d.getUTCDate() + 1)) dias.push(d.toISOString().slice(0, 10));
+        const vals = await hm(r, 'rotstats', dias); const out = {};
+        dias.forEach((d, i) => { const v = P(vals[i]); if (v) out[d] = v; });
+        return send(200, { stats: out, meta: P(await r.get('rotmeta')) });
       }
       case 'list': {
         const ms = String(q.m || '').split(',').filter(Boolean).slice(0, 36);
@@ -262,11 +290,11 @@ module.exports = async (req, res) => {
       case 'lookup': {
         const nf = String(q.nf || '').replace(/\D/g, '').replace(/^0+/, '');
         if (!nf) return send(400, { error: 'NF inválida' });
-        const [f, idx] = await Promise.all([r.hget('fat', nf), r.hget('nfidx', nf)]);
+        const [f, idx, rot] = await Promise.all([r.hget('fat', nf), r.hget('nfidx', nf), r.hget('nfmot', nf)]);
         const hist = await getRefs(r, P(idx) || []);
         hist.sort((a, b) => (a.data + (a.hora || '')).localeCompare(b.data + (b.hora || '')));
         const meta = P(await r.get('fatmeta'));
-        return send(200, { nf, fat: P(f), hist, base: meta ? { total: meta.total, de: meta.de, ate: meta.ate } : null });
+        return send(200, { nf, fat: P(f), hist, rota: P(rot), base: meta ? { total: meta.total, de: meta.de, ate: meta.ate } : null });
       }
       case 'save': {
         let rec = clean(body.rec || {});

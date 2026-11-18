@@ -81,7 +81,7 @@ function logout() {
 
 async function boot() {
   const j = await api('bootstrap');
-  Object.assign(S, { cfg: j.cfg, motoristas: j.motoristas || [], motMeta: j.motMeta, itens: j.itens || [], itensMeta: j.itensMeta, fatMeta: j.fatMeta, months: j.months, user: j.user });
+  Object.assign(S, { cfg: j.cfg, motoristas: j.motoristas || [], motMeta: j.motMeta, itens: j.itens || [], itensMeta: j.itensMeta, rotMeta: j.rotMeta, fatMeta: j.fatMeta, months: j.months, user: j.user });
   $('#login').classList.add('hidden'); $('#app').classList.remove('hidden');
   $('#whoName').textContent = `${j.user.nome} · ${j.user.perfil === 'adm' ? 'ADM' : 'Operação'}`;
   $$('#nav [data-adm]').forEach((b) => b.classList.toggle('hidden', !isAdm()));
@@ -426,42 +426,136 @@ const pill = (s) => `<span class="pill ${s}">${s === 'APROVADO' ? '✓ ' : s ===
 const canalTag = (c) => `<span class="dot c-${(c || 'ND').replace('/', '')}"></span>`;
 
 // ============ APROVAÇÕES ============
+const AP = { tipo: 'REENTREGA', sel: new Set(), aberto: new Set(), recs: [], fechado: {} };
 async function vAprovacoes() {
-  const m = $('#main');
-  m.innerHTML = `<div class="row" style="align-items:center;margin-bottom:12px"><h2 style="margin:0">Aprovações pendentes</h2><span class="spacer"></span>
-    <button class="btn" id="apSelAll">Selecionar todos</button>
-    <button class="btn bad" id="apRec">Recusar selecionados</button>
-    <button class="btn good" id="apOk">Aprovar selecionados</button></div>
-    <div class="muted small" style="margin-bottom:8px">Aprovou, está no controle — não precisa mais copiar para as abas PA/VET. O canal (VD/VET) vem do consolidado; corrija na edição se precisar.</div>
-    <div id="apList" class="muted">Carregando…</div>`;
-  let recs;
-  try { recs = (await api('pendentes')).recs; } catch (e) { $('#apList').textContent = e.message; return; }
-  if (!$('#apList')) return;
-  setPend(recs.length);
-  recs.sort((a, b) => (a.data + (a.hora || '')).localeCompare(b.data + (b.hora || '')));
-  const all = await loadAll().catch(() => []);
-  const cnt = reentregaCounts(all);
-  if (!$('#apList')) return;
-  if (!recs.length) { $('#apList').innerHTML = '<div class="card">Nenhuma pendência. 🎉</div>'; return; }
-  $('#apList').innerHTML = `<div class="tbl-wrap"><table><thead><tr><th><input type="checkbox" id="apChkAll"></th><th>Tipo</th><th>Data</th><th>Hora</th><th>NF</th><th>Retornos</th><th>Canal</th><th>Cliente</th><th>Motivo</th><th class="num">Valor</th><th>Motorista</th><th>Transp.</th><th>Conferente</th><th>Turno</th><th></th></tr></thead><tbody>
-  ${recs.map((r) => { const n = r.tipo === 'REENTREGA' ? (cnt[r.nf] || []).length : 0; return `<tr data-ref="${monthOf(r.data)}|${r.id}">
-    <td><input type="checkbox" class="apChk"></td><td>${TIPOS[r.tipo]}</td><td>${fD(r.data)}</td><td>${esc(r.hora || '')}</td><td><b>${esc(r.nf)}</b>${r.nfd ? '<div class="muted small">NFD ' + esc(r.nfd) + '</div>' : ''}</td>
-    <td>${n ? `<span class="times t${Math.min(n, 4)}">${n}×</span>` : ''}</td>
-    <td>${canalTag(r.canal)}${esc(r.canal)}${r.cruzado ? '' : ' <span class="muted small">(sem consolidado)</span>'}</td>
-    <td class="wrap">${esc(r.cliente || '')}</td><td>${esc(r.motivo || '')}</td><td class="num">${fMoney(r.valor)}</td><td>${esc(r.motorista || '')}</td><td>${esc(r.transportadora || '')}</td><td>${esc(r.conferente || '')}</td><td>${esc(r.turno || '')}</td>
-    <td><button class="link apEdit">editar</button></td></tr>`; }).join('')}
-  </tbody></table></div>`;
-  const sel = () => $$('.apChk').filter((c) => c.checked).map((c) => c.closest('tr').dataset.ref);
-  $('#apChkAll').onchange = (e) => $$('.apChk').forEach((c) => c.checked = e.target.checked);
-  $('#apSelAll').onclick = () => { $$('.apChk').forEach((c) => c.checked = true); $('#apChkAll').checked = true; };
-  const act = async (status) => {
-    const refs = sel(); if (!refs.length) return toast('Selecione ao menos um', true);
-    let motivoRecusa;
-    if (status === 'RECUSADO') { motivoRecusa = MOTIVO_RECUSA; if (!confirm(`Recusar ${refs.length} registro(s) por ${MOTIVO_RECUSA}?`)) return; }
-    try { await api('status', { refs, status, motivoRecusa }); invalidate(); toast(`${refs.length} registro(s) ${status === 'APROVADO' ? 'aprovado(s)' : 'recusado(s)'}`); vAprovacoes(); } catch (e) { toast(e.message, true); }
-  };
-  $('#apOk').onclick = () => act('APROVADO'); $('#apRec').onclick = () => act('RECUSADO');
-  $$('.apEdit').forEach((b) => b.onclick = () => { const ref = b.closest('tr').dataset.ref; const r = recs.find((x) => monthOf(x.data) + '|' + x.id === ref); editModal(r, vAprovacoes); });
+  const m = $('#main'); m.classList.add('full');
+  m.innerHTML = `<div class="reg-page">
+    <div class="reg-tabs" id="apTabs">${Object.entries(TIPOS_ATIVOS).map(([k, v]) => `<button data-t="${k}" class="${AP.tipo === k ? 'on' : ''}">${v} <b data-c="${k}">·</b></button>`).join('')}
+      <span class="spacer"></span><span class="muted small" id="apResumo"></span><button class="btn" id="apRef" style="margin-left:10px;min-height:32px">↻ Atualizar</button></div>
+    <div class="reg-body" id="apOut"><div class="muted" style="padding:16px">Carregando…</div></div>
+    <div class="reg-bar"><span id="apSelInfo" class="muted"></span><span class="spacer"></span>
+      <button class="btn bad" id="apRec" disabled>✕ Recusar selecionados</button><button class="btn good" id="apOk" disabled>✓ Aprovar selecionados</button></div>
+  </div>`;
+  $$('#apTabs button').forEach((b) => b.onclick = () => { AP.tipo = b.dataset.t; AP.sel.clear(); AP.aberto.clear(); $$('#apTabs button').forEach((x) => x.classList.toggle('on', x === b)); renderAprov(); });
+  $('#apRef').onclick = () => carregarAprov(true);
+  $('#apOk').onclick = () => decidir([...AP.sel], 'APROVADO');
+  $('#apRec').onclick = () => decidir([...AP.sel], 'RECUSADO');
+  await carregarAprov(false);
+}
+async function carregarAprov(force) {
+  try {
+    const [p] = await Promise.all([api('pendentes'), loadAll(force)]);
+    AP.recs = p.recs; setPend(p.recs.length);
+    // abre na aba que tem pendência, se a atual estiver vazia
+    if (!AP.recs.some((r) => r.tipo === AP.tipo)) { const t = Object.keys(TIPOS_ATIVOS).find((k) => AP.recs.some((r) => r.tipo === k)); if (t) AP.tipo = t; }
+    $$('#apTabs button').forEach((x) => x.classList.toggle('on', x.dataset.t === AP.tipo));
+    const ids = new Set(AP.recs.map((r) => r.id)); [...AP.sel].forEach((id) => { if (!ids.has(id)) AP.sel.delete(id); });
+    renderAprov();
+  } catch (e) { if ($('#apOut')) $('#apOut').innerHTML = `<div class="alert crit">${esc(e.message)}</div>`; }
+}
+const refOf = (r) => monthOf(r.data) + '|' + r.id;
+async function decidir(ids, status) {
+  const recs = AP.recs.filter((r) => ids.includes(r.id)); if (!recs.length) return;
+  if (status === 'RECUSADO' && !confirm(`Recusar ${recs.length} lançamento(s) por ${MOTIVO_RECUSA}?`)) return;
+  try {
+    await api('status', { refs: recs.map(refOf), status, motivoRecusa: status === 'RECUSADO' ? MOTIVO_RECUSA : undefined });
+    invalidate(); recs.forEach((r) => { AP.sel.delete(r.id); AP.aberto.delete(r.id); });
+    AP.recs = AP.recs.filter((r) => !ids.includes(r.id)); setPend(AP.recs.length);
+    toast(`${recs.length} ${status === 'APROVADO' ? 'aprovado(s)' : 'recusado(s)'}`);
+    renderAprov();
+    loadAll(true).catch(() => {});
+  } catch (e) { toast(e.message, true); }
+}
+function alertasDe(r, cnt) {
+  const a = [];
+  const hist = (cnt[r.nf] || []).filter((x) => x.id !== r.id && x.status === 'APROVADO');
+  if (r.tipo === 'REENTREGA' && hist.length) a.push(`<span class="al ${hist.length >= 2 ? 'crit' : 'warn'}" title="${esc(hist.map((h) => fD(h.data) + ' ' + (h.motivo || '')).join(' · '))}">↻ ${hist.length + 1}ª volta</span>`);
+  const dup = (S.cache || []).some((x) => x.id !== r.id && x.nf === r.nf && x.tipo === r.tipo && x.data === r.data && x.status !== 'RECUSADO');
+  if (dup) a.push('<span class="al crit">Duplicado no dia</span>');
+  const outraPend = (AP.recs || []).filter((x) => x.id !== r.id && x.nf === r.nf && x.tipo === r.tipo && x.data !== r.data);
+  if (outraPend.length) a.push(`<span class="al warn" title="${esc(outraPend.map((x) => fD(x.data)).join(', '))}">Outro lançamento pendente</span>`);
+  if (!r.cruzado) a.push('<span class="al warn">Sem consolidado</span>');
+  if (r.tipo === 'OCORRENCIA' && r.descontoMotorista === 'PARCIAL' && !(r.itens || []).length) a.push('<span class="al warn">Parcial sem itens</span>');
+  if ((r.tipo === 'NFD' || r.tipo === 'OCORRENCIA') && !nFotos(r)) a.push('<span class="al warn">Sem foto</span>');
+  const outros = (S.cache || []).filter((x) => x.nf === r.nf && x.tipo !== r.tipo && x.status !== 'RECUSADO');
+  if (outros.length) a.push(`<span class="al info">${[...new Set(outros.map((x) => TIPOS[x.tipo]))].join(' + ')}</span>`);
+  return a.join('');
+}
+const AP_COLS = {
+  REENTREGA: [['Recebido', 96], ['NF', 84], ['Cliente'], ['Motivo', 180], ['Valor', 112, 'num'], ['Motorista', 150], ['Alertas', 190]],
+  NFD: [['Recebido', 96], ['NF ref.', 84], ['Nº NFD', 80], ['Cliente'], ['Motivo', 120], ['Valor NFD', 112, 'num'], ['Motorista', 150], ['Alertas', 170]],
+  OCORRENCIA: [['Recebido', 96], ['NF', 84], ['Cliente'], ['Motivo', 120], ['Desconto', 104], ['Itens / fotos', 110], ['Motorista', 150], ['Alertas', 150]]
+};
+function celulasAprov(r, cnt) {
+  const rec = `<td><b>${fD(r.data).slice(0, 5)}</b> <span class="muted small">${esc(r.hora || '')}</span></td>`;
+  const nf = `<td><b>${esc(r.nf)}</b></td>`;
+  const cli = `<td class="wrap" title="${esc(r.cliente || '')}">${esc(r.cliente || '— sem consolidado')}${r.cidade ? `<div class="muted small ell">${esc(r.cidade)}</div>` : ''}</td>`;
+  const mot = `<td class="wrap" title="${esc(r.motorista || '')}">${esc(r.motorista || '')}<div class="muted small ell">${esc(r.transportadora || '')}${r.conferente ? ' · conf. ' + esc(r.conferente) : ''}</div></td>`;
+  const al = `<td class="als">${alertasDe(r, cnt)}</td>`;
+  const motivo = `<td class="wrap">${esc(r.motivo || '')}${r.obs ? `<div class="muted small ell" title="${esc(r.obs)}">💬 ${esc(r.obs)}</div>` : ''}</td>`;
+  if (r.tipo === 'REENTREGA') return rec + nf + cli + motivo + `<td class="num">${fMoney(r.valor)}</td>` + mot + al;
+  if (r.tipo === 'NFD') return rec + nf + `<td>${esc(r.nfd || '')}</td>` + cli + motivo + `<td class="num">${fMoney(r.valor)}</td>` + mot + al;
+  const it = r.itens || [];
+  return rec + nf + cli + motivo + `<td>${r.descontoMotorista ? `<span class="desc-tag d-${r.descontoMotorista.replace(' ', '')}">${DESC_LB[r.descontoMotorista]}</span>` : ''}</td>`
+    + `<td>${it.length ? `${it.length} item(ns) · ${fNum(it.reduce((s, x) => s + (x.qtd || 0), 0))} un` : ''}${nFotos(r) ? `<div class="muted small">📷 ${nFotos(r)}</div>` : ''}</td>` + mot + al;
+}
+function detalheAprov(r, cnt) {
+  const hist = (S.cache || []).filter((x) => x.nf === r.nf && x.id !== r.id).sort((a, b) => a.data.localeCompare(b.data));
+  return `<div class="ap-det">
+    <div class="ap-det-c"><div class="fld-l">Nota fiscal</div><div class="kv">
+      <div><span>Canal</span><b>${canalTag(r.canal)}${esc(r.canal)}</b></div><div><span>Faturamento</span>${fD(r.dtFat) || '—'}</div><div><span>Valor NF</span>${fMoney(r.valorNF) || '—'}</div>
+      <div><span>Representante</span>${esc(r.rep || '—')}</div><div><span>Pedido</span>${esc(r.pedido || '—')}</div><div><span>Cidade / bairro</span>${esc([r.cidade, r.bairro].filter(Boolean).join(' · ') || '—')}</div>
+      <div><span>Placa</span>${esc(r.placa || '—')}</div><div><span>Turno</span>${esc(r.turno || '—')}</div><div><span>Lançado por</span>${esc(r.criadoPor || '—')}</div></div>
+      ${r.obs ? `<div class="small" style="margin-top:8px">💬 ${esc(r.obs)}</div>` : ''}</div>
+    <div class="ap-det-c"><div class="fld-l">Histórico da NF</div>${hist.length ? `<div class="ap-hist">${hist.map((h) => `<div>${fD(h.data)} · <b>${TIPOS[h.tipo]}</b> · ${esc(h.motivo || '')} ${pill(h.status)}</div>`).join('')}</div>` : '<div class="muted small">Primeiro registro desta NF.</div>'}
+      ${itensHTML(r)}${galeriaHTML(r)}</div>
+  </div>`;
+}
+function renderAprov() {
+  const out = $('#apOut'); if (!out) return;
+  $$('#apTabs b[data-c]').forEach((b) => { const n = AP.recs.filter((r) => r.tipo === b.dataset.c).length; b.textContent = n; b.classList.toggle('zero', !n); });
+  const lista = AP.recs.filter((r) => r.tipo === AP.tipo).sort((a, b) => (a.data + (a.hora || '')).localeCompare(b.data + (b.hora || '')));
+  const velha = AP.recs.map((r) => r.data).sort()[0];
+  $('#apResumo').innerHTML = AP.recs.length ? `<b>${AP.recs.length}</b> pendente(s) no total${velha ? ` · mais antiga de ${fD(velha)} (${daysBetween(velha, todayISO())} dia(s))` : ''}` : '';
+  if (!lista.length) { out.innerHTML = `<div class="card ap-vazio">✓ Nenhuma ${TIPOS[AP.tipo].toLowerCase()} pendente de aprovação.</div>`; updApSel(); return; }
+  const cnt = reentregaCounts(S.cache || []);
+  const cols = AP_COLS[AP.tipo];
+  const head = `<tr><th class="chk" style="width:34px"><input type="checkbox" class="gAll"></th>${cols.map(([l, w, c]) => `<th class="${c || ''}" ${w ? `style="width:${w}px"` : ''}>${l}</th>`).join('')}<th style="width:100px"></th></tr>`;
+  let html = '';
+  for (const [g, nome] of GRUPOS) {
+    const gr = lista.filter((r) => grupoDe(r) === g); if (!gr.length) continue;
+    const val = gr.reduce((s, r) => s + (Number(r.valor) || 0), 0); const fech = AP.fechado[g];
+    const comAlerta = gr.filter((r) => alertasDe(r, cnt).includes('al crit')).length;
+    html += `<section class="grp ${fech ? 'closed' : ''}" data-g="${g}"><header class="grp-h"><button class="grp-tg">${fech ? '▸' : '▾'}</button><span class="dot c-${g === 'OUTROS' ? 'ND' : g}"></span><b class="grp-n">${nome}</b>
+      <span class="grp-s"><span>Pendentes <b>${gr.length}</b></span>${AP.tipo !== 'OCORRENCIA' ? `<span>Valor <b>${fMoney(val)}</b></span>` : ''}${comAlerta ? `<span class="al crit">${comAlerta} com alerta</span>` : ''}</span>
+      <span class="spacer"></span><button class="btn sm good gApOk">✓ Aprovar todos do ${g === 'OUTROS' ? 'grupo' : g}</button></header>
+      <div class="grp-b"><table class="fixed ap-t2"><thead>${head}</thead><tbody>
+      ${gr.map((r) => `<tr data-id="${r.id}" class="ap-row ${AP.sel.has(r.id) ? 'sel' : ''} ${AP.aberto.has(r.id) ? 'open' : ''}"><td class="chk"><input type="checkbox" class="rChk" ${AP.sel.has(r.id) ? 'checked' : ''}></td>${celulasAprov(r, cnt)}
+        <td class="ap-act"><button class="ap-b ok" title="Aprovar">✓</button><button class="ap-b bad" title="Recusar (${MOTIVO_RECUSA})">✕</button></td></tr>
+        ${AP.aberto.has(r.id) ? `<tr class="ap-detrow"><td colspan="${cols.length + 2}">${detalheAprov(r, cnt)}</td></tr>` : ''}`).join('')}
+      </tbody></table></div></section>`;
+  }
+  out.innerHTML = html + '<div class="muted small" style="padding:0 2px">Clique na linha para ver detalhes, fotos e histórico da NF · duplo clique para editar.</div>';
+  $$('#apOut .grp-tg').forEach((b) => b.onclick = () => { const g = b.closest('.grp').dataset.g; AP.fechado[g] = !AP.fechado[g]; renderAprov(); });
+  $$('#apOut .gApOk').forEach((b) => b.onclick = () => { const g = b.closest('.grp').dataset.g; const ids = lista.filter((r) => grupoDe(r) === g).map((r) => r.id); if (confirm(`Aprovar ${ids.length} lançamento(s)?`)) decidir(ids, 'APROVADO'); });
+  $$('#apOut tr.ap-row').forEach((tr) => {
+    const id = tr.dataset.id;
+    tr.onclick = (e) => {
+      if (e.target.closest('input,button,a,img')) return;
+      AP.aberto.has(id) ? AP.aberto.delete(id) : AP.aberto.add(id); renderAprov();
+    };
+    tr.ondblclick = () => { const r = AP.recs.find((x) => x.id === id); if (r) editModal(r, () => carregarAprov(true)); };
+    $('.rChk', tr).onchange = (e) => { e.target.checked ? AP.sel.add(id) : AP.sel.delete(id); tr.classList.toggle('sel', e.target.checked); updApSel(); };
+    $('.ap-b.ok', tr).onclick = () => decidir([id], 'APROVADO');
+    $('.ap-b.bad', tr).onclick = () => decidir([id], 'RECUSADO');
+  });
+  $$('#apOut .gAll').forEach((c) => c.onchange = () => { c.closest('.grp').querySelectorAll('tr.ap-row').forEach((tr) => { const id = tr.dataset.id; c.checked ? AP.sel.add(id) : AP.sel.delete(id); tr.classList.toggle('sel', c.checked); $('.rChk', tr).checked = c.checked; }); updApSel(); });
+  updApSel();
+}
+function updApSel() {
+  const n = AP.sel.size; const recs = AP.recs.filter((r) => AP.sel.has(r.id));
+  if ($('#apSelInfo')) $('#apSelInfo').innerHTML = n ? `<b>${n}</b> selecionado(s) · ${fMoney(recs.reduce((s, r) => s + (Number(r.valor) || 0), 0))}` : 'Use ✓ / ✕ na linha para decidir uma por vez, ou marque várias e use os botões ao lado.';
+  if ($('#apOk')) { $('#apOk').disabled = $('#apRec').disabled = !n; }
 }
 
 // ============ EDIÇÃO ============
@@ -736,7 +830,7 @@ function vConsulta() {
       <div class="card"><h3>Consolidado de faturamento</h3>${f ? `<div class="kv">
         <div><span>Canal</span><b>${canalTag(f[0])}${esc(f[0])}</b></div><div><span>Transportadora</span>${esc(f[1])}</div><div style="grid-column:1/-1"><span>Cliente</span>${esc(f[2] || f[3])}</div>
         <div><span>Pedido</span>${esc(f[4] || '')}</div><div><span>Faturamento</span>${fD(f[5])}</div><div><span>Valor NF</span>${fMoney(f[7])}</div><div><span>Peso bruto</span>${fNum(f[6], 1)} kg</div>
-        <div><span>Representante</span>${esc(f[8] || '')}</div><div><span>Cidade / bairro</span>${esc(f[9] || '')} ${f[10] ? '· ' + esc(f[10]) : ''}</div></div>` : `<div class="alert warn">NF não encontrada no consolidado.</div><div class="muted small" style="margin-top:6px">${baseTxt(j.base)}</div>`}</div>
+        <div><span>Representante</span>${esc(f[8] || '')}</div>${j.rota ? `<div><span>Rota (TMS)</span>${esc(j.rota[0])} · ${fD(j.rota[3])}</div>` : ''}<div><span>Cidade / bairro</span>${esc(f[9] || '')} ${f[10] ? '· ' + esc(f[10]) : ''}</div></div>` : `<div class="alert warn">NF não encontrada no consolidado.</div><div class="muted small" style="margin-top:6px">${baseTxt(j.base)}</div>`}</div>
       <div class="card"><h3>Histórico da NF ${esc(nf)} ${reent ? `· <span class="times t${Math.min(reent, 4)}">${reent}×</span> reentrega(s)` : ''}</h3>
       ${j.hist.length ? `<div class="tl">${j.hist.map((h) => `<div class="tl-item"><div><div class="d">${fD(h.data)}</div><div class="muted small">${esc(h.hora || '')} ${h.turno ? '· ' + esc(h.turno) : ''}</div></div>
         <div><b>${TIPOS[h.tipo]}</b> ${pill(h.status)} ${h.motivo ? '· ' + esc(h.motivo) : ''}${h.nfd ? ' · NFD ' + esc(h.nfd) : ''}${h.orEntrada ? ' · OR ' + esc(h.orEntrada) : ''}

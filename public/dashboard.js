@@ -1,6 +1,6 @@
 /* Dashboard */
 'use strict';
-const DF = { preset: '30d', de: null, ate: null, canal: '', transp: '', pend: false, rank: 'motorista' };
+const DF = { preset: '30d', de: null, ate: null, canal: '', transp: '', pend: false, rank: 'motorista', metaVer: 'acima' };
 const charts = {};
 const C1 = '#2a78d6', INK2 = '#52514e', INK3 = '#8a8984', GRID = '#ecebe6';
 
@@ -89,6 +89,7 @@ function renderDash() {
     ${kpi('Ocorrências com desconto do motorista', fNum(OC.filter((r) => r.descontoMotorista === 'TOTAL' || r.descontoMotorista === 'PARCIAL').length), `Total: ${fNum(OC.filter((r) => r.descontoMotorista === 'TOTAL').length)} · Parcial: ${fNum(OC.filter((r) => r.descontoMotorista === 'PARCIAL').length)} · Sem: ${fNum(OC.filter((r) => r.descontoMotorista === 'SEM DESCONTO').length)}`)}
     ${kpi('Reentregas sem cruzamento', fNum(semCruz), semCruz ? 'NF não encontrada no consolidado' : 'todas cruzaram com o consolidado')}
   </div>
+  <div id="metaBox" style="margin-bottom:12px"></div>
   <div class="grid g2" style="margin-bottom:12px">
     <div class="card chart-card"><h3>Reentregas por <span id="granLb"></span></h3><div class="legend" id="lgEvo"></div><div class="chart-box"><canvas id="chEvo"></canvas></div></div>
     <div class="card chart-card"><h3>Taxa de reentrega por mês de faturamento</h3><div class="sub">% das NFs faturadas no mês que voltaram ao menos 1×</div><div class="legend" id="lgTaxa"></div><div class="chart-box"><canvas id="chTaxa"></canvas></div></div>
@@ -107,6 +108,7 @@ function renderDash() {
   <div class="section-title"><h3>NFs reincidentes (voltaram 2× ou mais)</h3><span class="muted small">${fNum(reinc.length)} NF(s)</span><span class="spacer"></span><button class="btn" id="dExpRe">Exportar Excel</button></div>
   <div id="reincTbl"></div>`;
 
+  renderMeta(R, st, monthsP, cntAll, fil);
   // --- evolução
   const span = daysBetween(DF.de, DF.ate);
   const gran = span <= 45 ? 'dia' : span <= 210 ? 'semana' : 'mês';
@@ -198,3 +200,76 @@ Chart.defaults.font.family = 'system-ui, -apple-system, "Segoe UI", Roboto, sans
 Chart.defaults.font.size = 12;
 Chart.defaults.color = INK2;
 Chart.defaults.borderColor = GRID;
+
+
+// ===== Meta de reentrega por transportadora e motorista =====
+async function renderMeta(R, st, monthsP, cntAll, fil) {
+  const box = $('#metaBox'); if (!box) return;
+  const meta = Number(S.cfg.metaReentrega ?? 3) / 100, minN = Number(S.cfg.minEntregasMeta ?? 10);
+  const key = DF.de + '|' + DF.ate;
+  if (!S.rotCache || S.rotCache.key !== key) {
+    box.innerHTML = '<div class="card muted">Calculando reentrega por motorista…</div>';
+    try { const j = await api(`rot-stats?de=${DF.de < '2024-01-01' ? '2024-01-01' : DF.de}&ate=${DF.ate}`); S.rotCache = { key, stats: j.stats, meta: j.meta }; }
+    catch (e) { S.rotCache = { key, stats: {}, meta: null, err: e.message }; }
+    if (!$('#metaBox')) return;
+  }
+  const rot = S.rotCache.stats || {};
+  const temRota = Object.keys(rot).length > 0;
+  const nk = (s) => strip(s);
+  // --- denominadores pela roteirização
+  const entMot = {}; const entTr = {};
+  Object.values(rot).forEach((dia) => Object.entries(dia).forEach(([m, o]) => {
+    const k = nk(m); const e = (entMot[k] = entMot[k] || { nome: m, t: o.t, n: 0 }); e.n += o.n; if (o.t) e.t = o.t;
+    if (o.t) entTr[o.t] = (entTr[o.t] || 0) + o.n;
+  }));
+  // --- numeradores: NFs reentregues no período (filtro de canal/status já aplicado)
+  const reMot = {}, reTr = {};
+  R.forEach((r) => { if (r.motorista) (reMot[nk(r.motorista)] = reMot[nk(r.motorista)] || { nome: r.motorista, t: r.transportadora, nfs: new Set() }).nfs.add(r.nf); if (r.transportadora) (reTr[r.transportadora] = reTr[r.transportadora] || new Set()).add(r.nf); });
+
+  // --- transportadoras: pela roteirização se houver; senão pelo consolidado (coorte do mês de faturamento)
+  let trRows, trFonte;
+  if (temRota) {
+    trFonte = 'NFs reentregues no período ÷ NFs roteirizadas no período';
+    trRows = [...new Set([...Object.keys(entTr), ...Object.keys(reTr)])].map((t) => ({ nome: t, ent: entTr[t] || 0, re: (reTr[t] || new Set()).size }));
+  } else {
+    trFonte = `Pelo consolidado: NFs faturadas em ${monthsP.map(fMes).join(', ') || '—'} que voltaram ÷ NFs faturadas`;
+    const fatT = {}; monthsP.forEach((m) => Object.entries(st[m] || {}).forEach(([k, v]) => { const [c, t] = k.split('|'); if (!DF.canal || c === DF.canal) fatT[t] = (fatT[t] || 0) + v.n; }));
+    const reT = {}; Object.entries(cntAll).forEach(([nf, arr]) => { const r = arr[0]; if (!r.dtFat || !fil(r) || !monthsP.includes(monthOf(r.dtFat))) return; const t = r.transpFat || r.transportadora; if (t) (reT[t] = reT[t] || new Set()).add(nf); });
+    trRows = Object.keys(fatT).map((t) => ({ nome: t, ent: fatT[t], re: (reT[t] || new Set()).size }));
+  }
+  trRows.forEach((x) => { x.p = x.ent ? x.re / x.ent : null; }); trRows.sort((a, b) => (b.p ?? -1) - (a.p ?? -1) || b.re - a.re);
+
+  // --- motoristas
+  const keys = new Set([...Object.keys(entMot), ...Object.keys(reMot)]);
+  let mRows = [...keys].map((k) => { const e = entMot[k], r = reMot[k]; return { nome: (e || r).nome, t: (e && e.t) || (r && r.t) || '', ent: e ? e.n : 0, re: r ? r.nfs.size : 0 }; })
+    .filter((x) => !DF.transp || x.t === DF.transp);
+  mRows.forEach((x) => { x.p = x.ent ? x.re / x.ent : null; x.ok = x.ent >= minN; });
+  const avaliados = mRows.filter((x) => x.ok), acima = avaliados.filter((x) => x.p >= meta);
+  const semRota = mRows.filter((x) => !x.ent && x.re);
+  mRows.sort((a, b) => (b.ok - a.ok) || ((b.p ?? -1) - (a.p ?? -1)) || b.re - a.re);
+  const lista = DF.metaVer === 'acima' ? mRows.filter((x) => x.ok && x.p >= meta) : mRows;
+
+  const escala = Math.max(meta * 2, ...trRows.map((x) => x.p || 0), ...avaliados.map((x) => x.p || 0)) || meta * 2;
+  const bar = (p) => p == null ? '<span class="muted small">sem base</span>' : `<div class="mbar"><div class="mbar-f ${p >= meta ? 'bad' : 'ok'}" style="width:${Math.min(100, p / escala * 100)}%"></div><div class="mbar-m" style="left:${meta / escala * 100}%" title="Meta ${fPct(meta)}"></div></div>`;
+  const stt = (x) => x.p == null ? '' : x.ok === false ? '<span class="muted small">poucas entregas</span>' : x.p >= meta ? '<span class="st bad">✕ acima</span>' : '<span class="st ok">✓ na meta</span>';
+  const pct = (p) => (p == null ? '–' : fPct(p, 2));
+  box.innerHTML = `<div class="grid g2" style="align-items:start">
+    <div class="card"><div class="row" style="align-items:center;margin-bottom:4px"><h3 style="margin:0">Reentrega por transportadora</h3><span class="spacer"></span><span class="meta-tag">Meta &lt; ${fPct(meta, 1)}</span></div>
+      <div class="sub muted small" style="margin-bottom:8px">${esc(trFonte)}</div>
+      ${trRows.length ? `<table class="mtbl"><thead><tr><th>Transportadora</th><th class="num">NFs ${temRota ? 'entregues' : 'faturadas'}</th><th class="num">Reentregues</th><th class="num">%</th><th style="width:34%"></th><th></th></tr></thead><tbody>
+      ${trRows.map((x) => { x.ok = true; return `<tr><td><b>${esc(x.nome)}</b></td><td class="num">${fNum(x.ent)}</td><td class="num">${fNum(x.re)}</td><td class="num"><b>${pct(x.p)}</b></td><td>${bar(x.p)}</td><td>${stt(x)}</td></tr>`; }).join('')}</tbody></table>` : '<div class="muted">Sem dados no período.</div>'}
+    </div>
+    <div class="card"><div class="row" style="align-items:center;margin-bottom:4px"><h3 style="margin:0">Reentrega por motorista</h3><span class="spacer"></span><span class="meta-tag">Meta &lt; ${fPct(meta, 1)}</span></div>
+      ${temRota ? `<div class="sub muted small" style="margin-bottom:8px">NFs reentregues ÷ NFs roteirizadas para o motorista no período · só entra na meta quem teve ${minN}+ entregas</div>
+      <div class="row" style="align-items:center;margin-bottom:8px">
+        <div class="meta-kpi ${acima.length ? 'bad' : 'ok'}"><b>${fNum(acima.length)}</b> de ${fNum(avaliados.length)} motoristas acima da meta</div><span class="spacer"></span>
+        <div class="seg" id="metaSeg"><button data-v="acima" class="${DF.metaVer === 'acima' ? 'on' : ''}">Acima da meta</button><button data-v="todos" class="${DF.metaVer === 'todos' ? 'on' : ''}">Todos</button></div></div>
+      <div class="tbl-wrap" style="max-height:420px"><table class="mtbl fixed"><thead><tr><th>Motorista</th><th style="width:92px">Transp.</th><th class="num" style="width:66px">Entregas</th><th class="num" style="width:56px">Reentr.</th><th class="num" style="width:68px">%</th><th style="width:84px"></th><th style="width:30px"></th></tr></thead><tbody>
+      ${lista.length ? lista.map((x) => `<tr class="${x.ok ? '' : 'dim'}"><td class="wrap" title="${esc(x.nome)}">${esc(x.nome)}</td><td>${esc(x.t)}</td><td class="num">${fNum(x.ent)}</td><td class="num">${fNum(x.re)}</td><td class="num"><b>${pct(x.p)}</b></td><td>${bar(x.p)}</td><td>${!x.ent ? '<span class="muted small" title="sem rota no período">–</span>' : !x.ok ? '<span class="muted small" title="poucas entregas para avaliar">·</span>' : x.p >= meta ? '<span class="st-i bad" title="Acima da meta">✕</span>' : '<span class="st-i ok" title="Na meta">✓</span>'}</td></tr>`).join('') : `<tr><td colspan="7" class="muted" style="padding:12px">${DF.metaVer === 'acima' ? 'Nenhum motorista acima da meta no período. 🎉' : 'Sem dados no período.'}</td></tr>`}
+      </tbody></table></div>
+      ${semRota.length ? `<div class="muted small" style="margin-top:6px">${fNum(semRota.length)} motorista(s) com reentrega mas sem rota carregada no período — envie a roteirização desses dias no Admin.</div>` : ''}`
+      : `<div class="alert warn" style="margin-top:8px">Para calcular a % por motorista, carregue a <b>roteirização</b> (NF × motorista) do período em <b>Admin → Entregas por motorista</b>.${S.rotCache.meta ? ` Rotas carregadas hoje cobrem ${fD(S.rotCache.meta.de)} a ${fD(S.rotCache.meta.ate)}.` : ''}</div>
+      <div class="muted small" style="margin-top:8px">Enquanto isso, reentregas por motorista no período: ${groupCount(R, (r) => r.motorista).slice(0, 5).map(([k, v]) => `${esc(k)} (${v})`).join(' · ') || '—'}</div>`}
+    </div></div>`;
+  $$('#metaSeg button').forEach((b) => b.onclick = () => { DF.metaVer = b.dataset.v; renderMeta(R, st, monthsP, cntAll, fil); });
+}

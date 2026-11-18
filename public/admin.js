@@ -98,6 +98,39 @@ async function readTable(file) {
   const wb = await readFile(file); return sheetRows(wb.Sheets[wb.SheetNames[0]]);
 }
 
+// ---------- roteirização (NF × motorista) ----------
+const ROT_NF = ['NOTA FISCAL', 'NF', 'NF-E', 'NFE', 'NO NF', 'NO DA NF', 'NUMERO NF', 'NUMERO DA NF', 'NUMERO DA NOTA', 'NOTA', 'DOCUMENTO', 'NUM. NF', 'N. NF', 'NOTA FISCAL/SERIE', 'NF/SERIE'];
+const ROT_MOT = ['MOTORISTA', 'NOME MOTORISTA', 'NOME DO MOTORISTA', 'CONDUTOR'];
+const ROT_PLACA = ['PLACA', 'PLACA VEICULO', 'PLACA DO VEICULO', 'VEICULO'];
+const ROT_DATA = ['DATA ROTA', 'DATA DA ROTA', 'DATA ROTEIRIZACAO', 'DATA DE ROTEIRIZACAO', 'DATA SAIDA', 'DATA DE SAIDA', 'DATA CARREGAMENTO', 'DATA DE CARREGAMENTO', 'DATA EXPEDICAO', 'DATA ENTREGA', 'DATA DE ENTREGA', 'DATA PREVISTA', 'DATA'];
+const ROT_TR = ['TRANSPORTADORA', 'TRANSPORTADOR'];
+function parseRoteirizacao(sheets, dataPadrao) {
+  for (const R of sheets) {
+    for (let i = 0; i < Math.min(15, R.length); i++) {
+      const row = (R[i] || []).map(H); const pick = (l) => { for (const k of l) { const j = row.indexOf(k); if (j >= 0) return j; } return -1; };
+      const cNF = pick(ROT_NF), cM = pick(ROT_MOT), cP = pick(ROT_PLACA); if (cNF < 0 || (cM < 0 && cP < 0)) continue;
+      const cD = pick(ROT_DATA), cT = pick(ROT_TR);
+      const porPlaca = new Map((S.motoristas || []).filter((m) => m.ativo !== false).map((m) => [m.placa, m]));
+      const rows = []; const stats = {}; const seen = new Set(); let semMot = 0;
+      for (let k = i + 1; k < R.length; k++) {
+        const r = R[k]; const m = String(r[cNF] ?? '').match(/\d{3,9}/); if (!m) continue; const nf = m[0].replace(/^0+/, '');
+        const placa = cP >= 0 ? String(r[cP] ?? '').replace(/[\s-]/g, '').toUpperCase() : '';
+        let mot = cM >= 0 ? String(r[cM] ?? '').replace(/\s+/g, ' ').trim().toUpperCase() : '';
+        const base = placa ? porPlaca.get(placa) : null;
+        if (!mot && base) mot = base.nome;
+        if (!mot) { semMot++; continue; }
+        const data = (cD >= 0 && excelDate(r[cD])) || dataPadrao;
+        const tr = (cT >= 0 && transpCurta(r[cT])) || (base && base.transp) || ((S.motoristas || []).find((x) => x.nome === mot) || {}).transp || '';
+        if (seen.has(nf + '|' + data)) continue; seen.add(nf + '|' + data);
+        rows.push([nf, mot, placa, tr, data]);
+        const o = ((stats[data] = stats[data] || {})[mot] = stats[data][mot] || { n: 0, t: tr }); o.n++;
+      }
+      return { rows, stats, semMot, colunas: { nf: R[i][cNF], motorista: cM >= 0 ? R[i][cM] : null, placa: cP >= 0 ? R[i][cP] : null, data: cD >= 0 ? R[i][cD] : null } };
+    }
+  }
+  throw new Error('Não achei as colunas de Nota Fiscal e Motorista (ou Placa) nas primeiras linhas do arquivo.');
+}
+
 // ---------- consolidado ----------
 function parseConsolidado(wb) {
   const rows = []; const stats = {}; const porAba = []; const seen = new Set();
@@ -228,7 +261,13 @@ function vAdmin() {
       <input type="file" id="aOld" accept=".xlsx,.xlsm,.xls">
       <div id="aOldOut"></div>
     </div>
-    <div class="card stack"><h3>3. Reprocessar cruzamento</h3>
+    <div class="card stack"><h3>3. Entregas por motorista (roteirização)</h3>
+      <div class="${S.rotMeta ? 'alert info' : 'alert warn'}" id="aRotSt">${S.rotMeta ? `Rotas de <b>${fD(S.rotMeta.de)}</b> a <b>${fD(S.rotMeta.ate)}</b> · ${fNum(S.rotMeta.nfs)} NFs · último arquivo <b>${esc(S.rotMeta.arquivo || '')}</b> em ${new Date(S.rotMeta.atualizadoEm).toLocaleString('pt-BR')}` : 'Nenhuma rota carregada: sem ela o dashboard não calcula a % de reentrega por motorista.'}</div>
+      <div class="muted small">Envie o relatório de roteirização / entregas do TMS (.xlsx ou .csv) com, no mínimo, as colunas de <b>Nota Fiscal</b> e <b>Motorista</b> (ou <b>Placa</b>). Se tiver coluna de data da rota, ela é usada; senão vale a data abaixo. Pode enviar todo dia: os dias do arquivo são substituídos, sem duplicar.</div>
+      <div class="row"><label style="max-width:220px">Data das rotas (se o arquivo não tiver)<input type="date" id="aRotData" value="${todayISO()}"></label></div>
+      <input type="file" id="aRotFile" accept=".xlsx,.xls,.csv"><div id="aRotOut"></div>
+    </div>
+    <div class="card stack"><h3>4. Reprocessar cruzamento</h3>
       <div class="muted small">Refaz o cruzamento com o consolidado para registros que ainda não encontraram a NF (ex.: lançados antes de subir o consolidado do mês).</div>
       <div><button class="btn" id="aRecross">Reprocessar todos os meses</button></div><div id="aRecOut" class="muted small"></div>
     </div>
@@ -241,6 +280,8 @@ function vAdmin() {
         <label>Motivos de NFD<textarea id="lMotN">${esc(S.cfg.motivosNFD.join('\n'))}</textarea></label>
         <label>Motivos de ocorrência<textarea id="lMotO">${esc(S.cfg.motivosOcorrencia.join('\n'))}</textarea></label>
         <label>Conferentes (sugestões)<textarea id="lConf">${esc((S.cfg.conferentes || []).join('\n'))}</textarea></label>
+        <label>Meta de reentrega por motorista (%)<input id="lMeta" type="number" step="0.1" min="0" value="${esc(S.cfg.metaReentrega ?? 3)}"></label>
+        <label>Mínimo de NFs entregues para o motorista entrar na meta<input id="lMinMeta" type="number" step="1" min="1" value="${esc(S.cfg.minEntregasMeta ?? 10)}"></label>
         <label>Horário dos turnos (início-fim)<textarea id="lTurno">${esc(Object.entries(S.cfg.turnoHoras || {}).map(([k, [a, b]]) => `${k} ${a}-${b}`).join('\n'))}</textarea></label>
       </div>
       <div><button class="btn primary" id="aSaveCfg">Salvar listas</button></div>
@@ -266,7 +307,7 @@ function vAdmin() {
   const lines = (id) => $(id).value.split('\n').map((s) => s.trim()).filter(Boolean);
   $('#aSaveCfg').onclick = async () => {
     const th = {}; lines('#lTurno').forEach((l) => { const m = l.match(/^(\S+)\s+(\d{1,2}:\d{2})\s*-\s*(\d{1,2}:\d{2})/); if (m) th[m[1]] = [m[2].padStart(5, '0'), m[3].padStart(5, '0')]; });
-    const cfg = { motivosReentrega: lines('#lMotR').map((s) => s.toUpperCase()), transportadoras: lines('#lTr').map((s) => s.toUpperCase()), motivosNFD: lines('#lMotN').map((s) => s.toUpperCase()), motivosOcorrencia: lines('#lMotO').map((s) => s.toUpperCase()), conferentes: lines('#lConf').map((s) => s.toUpperCase()), turnoHoras: th, turnos: Object.keys(th).length ? Object.keys(th) : S.cfg.turnos };
+    const cfg = { motivosReentrega: lines('#lMotR').map((s) => s.toUpperCase()), transportadoras: lines('#lTr').map((s) => s.toUpperCase()), motivosNFD: lines('#lMotN').map((s) => s.toUpperCase()), motivosOcorrencia: lines('#lMotO').map((s) => s.toUpperCase()), conferentes: lines('#lConf').map((s) => s.toUpperCase()), turnoHoras: th, metaReentrega: Number($('#lMeta').value) || 3, minEntregasMeta: Math.max(1, Number($('#lMinMeta').value) || 10), turnos: Object.keys(th).length ? Object.keys(th) : S.cfg.turnos };
     try { S.cfg = (await api('cfg', { cfg })).cfg; toast('Listas salvas'); } catch (e) { toast(e.message, true); }
   };
   const listaMot = () => {
@@ -275,6 +316,23 @@ function vAdmin() {
     el.innerHTML = `<div class="tbl-wrap" style="max-height:320px"><table><thead><tr><th>Motorista</th><th>Placa</th><th>Transp.</th><th>Veículo</th><th>Ativo</th></tr></thead><tbody>${l.slice(0, 300).map((m) => `<tr${m.ativo === false ? ' style="color:var(--ink3)"' : ''}><td>${esc(m.nome)}</td><td>${esc(m.placa)}</td><td>${esc(m.transp)}</td><td>${esc(m.veiculo || '')}</td><td>${m.ativo === false ? 'Não' : 'Sim'}</td></tr>`).join('')}</tbody></table></div><div class="muted small">${fNum(l.length)} encontrado(s)${l.length > 300 ? ' · mostrando 300' : ''}</div>`;
   };
   $('#aMotQ') && ($('#aMotQ').oninput = listaMot); listaMot();
+  $('#aRotFile').onchange = async (e) => {
+    const f = e.target.files[0]; if (!f) return; const out = $('#aRotOut'); out.innerHTML = '<div class="muted">Lendo arquivo…</div>';
+    try {
+      let sheets;
+      if (/\.csv$/i.test(f.name)) sheets = [await readTable(f)]; else { const wb = await readFile(f); sheets = wb.SheetNames.map((n) => sheetRows(wb.Sheets[n])); }
+      const p = parseRoteirizacao(sheets, $('#aRotData').value || todayISO());
+      if (!p.rows.length) throw new Error('Nenhuma NF com motorista encontrada.');
+      const dias = Object.keys(p.stats).sort(); const mots = new Set(p.rows.map((x) => x[1]));
+      out.innerHTML = `<div class="alert info">Colunas usadas: NF = <b>${esc(p.colunas.nf)}</b>${p.colunas.motorista ? ` · Motorista = <b>${esc(p.colunas.motorista)}</b>` : ''}${p.colunas.placa ? ` · Placa = <b>${esc(p.colunas.placa)}</b>` : ''} · Data = <b>${esc(p.colunas.data || 'data informada acima')}</b><br>
+        ${fNum(p.rows.length)} NFs · ${fNum(mots.size)} motoristas · ${dias.length === 1 ? fD(dias[0]) : `${fD(dias[0])} a ${fD(dias[dias.length - 1])}`}${p.semMot ? ` · ${fNum(p.semMot)} linhas sem motorista ignoradas` : ''}</div>
+        <div class="progress" id="aRotPg"><div></div></div>`;
+      const CH = 3000;
+      for (let i = 0; i < p.rows.length; i += CH) { await api('rot-upload', { rows: p.rows.slice(i, i + CH) }); $('#aRotPg div').style.width = Math.min(100, Math.round((i + CH) / p.rows.length * 100)) + '%'; }
+      const j = await api('rot-upload', { stats: p.stats, fim: true, arquivo: f.name });
+      S.rotMeta = j.meta; S.rotCache = null; toast('Rotas carregadas'); vAdmin();
+    } catch (err) { out.innerHTML = `<div class="alert crit">${esc(err.message)}</div>`; }
+  };
   $('#aItFile').onchange = async (e) => {
     const f = e.target.files[0]; if (!f) return; const out = $('#aItOut'); out.innerHTML = '<div class="muted">Lendo arquivo…</div>';
     try {
