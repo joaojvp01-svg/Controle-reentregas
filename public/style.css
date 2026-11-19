@@ -298,3 +298,15 @@ main.full{max-width:none;padding:0;height:100vh;overflow:hidden}
 .ap-vazio{padding:28px;text-align:center;font-size:15px;color:#0a6d0a}
 .btn.sm.good{min-height:28px}
 @media (max-width:900px){.ap-det{grid-template-columns:1fr;padding-left:16px}}
+
+/* segue por VD/VET */
+.seg-mini{display:inline-flex;border:1px solid var(--line2);border-radius:7px;overflow:hidden;background:#fff}
+.seg-mini button{font:inherit;font-size:11.5px;font-weight:700;border:0;background:none;padding:4px 9px;cursor:pointer;color:var(--ink3)}
+.seg-mini button+button{border-left:1px solid var(--line2)}
+.seg-mini button:hover{color:var(--ink);background:#f3f3f0}
+.seg-mini button.on.cVD{background:#2a78d6;color:#fff} .seg-mini button.on.cVET{background:#eb6834;color:#fff}
+.seg-mini.falta{border-color:var(--crit);box-shadow:0 0 0 1px var(--crit)}
+.seg-mini.mudou{box-shadow:0 0 0 2px #fab219}
+.grp-b td .seg-mini{vertical-align:middle}
+.ap-t th:nth-child(2){width:104px} .ap-t th:nth-child(4){width:50px} .ap-t th:nth-child(1){width:62px}
+.ap-t th:nth-child(1){width:70px} .ap-t th:nth-child(2){width:100px} .ap-t th:nth-child(4){width:46px}

@@ -137,12 +137,13 @@ async function getRefs(r, refs) {
 function clean(rec) {
   const allowed = ['id', 'tipo', 'canal', 'canalAuto', 'nf', 'data', 'hora', 'motivo', 'valor', 'peso', 'motorista', 'placa',
     'transportadora', 'conferente', 'turno', 'status', 'obs', 'nfd', 'dataEmissao', 'dataEntrega', 'orEntrada',
-    'dataRetornoEstoque', 'descontoMotorista', 'fotoDoc', 'fotosAvaria', 'itens', 'cliente', 'rep', 'pedido', 'dtFat', 'cidade', 'bairro', 'origem', 'dataLanc', 'abaOrigem'];
+    'dataRetornoEstoque', 'canalReentrega', 'descontoMotorista', 'fotoDoc', 'fotosAvaria', 'itens', 'cliente', 'rep', 'pedido', 'dtFat', 'cidade', 'bairro', 'origem', 'dataLanc', 'abaOrigem'];
   const o = {};
   for (const k of allowed) if (rec[k] !== undefined && rec[k] !== null && rec[k] !== '') o[k] = rec[k];
   if (o.nf != null) o.nf = String(o.nf).replace(/\D/g, '').replace(/^0+/, '');
   ['valor', 'peso'].forEach((k) => { if (o[k] != null) { const n = Number(o[k]); o[k] = isFinite(n) ? n : undefined; } });
   if (o.descontoMotorista && !['TOTAL', 'PARCIAL', 'SEM DESCONTO'].includes(o.descontoMotorista)) delete o.descontoMotorista;
+  if (o.canalReentrega && !['VD', 'VET'].includes(o.canalReentrega)) delete o.canalReentrega;
   if (o.fotoDoc && typeof o.fotoDoc !== 'string') delete o.fotoDoc;
   if (o.itens) {
     o.itens = (Array.isArray(o.itens) ? o.itens : []).filter((x) => x && x.cod).slice(0, 60).map((x) => ({
@@ -323,6 +324,8 @@ module.exports = async (req, res) => {
         const f = P(await r.hget('fat', rec.nf));
         applyFat(rec, f);
         if (!rec.canal) rec.canal = 'N/D';
+        // por onde a reentrega segue: começa pelo canal da nota (promocional/sem canal: o ADM escolhe)
+        if (isNew && rec.tipo === 'REENTREGA' && !rec.canalReentrega && (rec.canal === 'VD' || rec.canal === 'VET')) rec.canalReentrega = rec.canal;
         await saveRecords(r, [rec]);
         return send(200, { rec });
       }
@@ -338,6 +341,16 @@ module.exports = async (req, res) => {
         });
         await saveRecords(r, recs);
         return send(200, { n: recs.length });
+      }
+      case 'seguir': {
+        // define por qual canal (VD/VET) a reentrega vai seguir
+        if (needAdm()) return;
+        const { refs = [], canal } = body;
+        if (!['VD', 'VET'].includes(canal)) return send(400, { error: 'Canal inválido' });
+        const recs = (await getRefs(r, refs)).filter((x) => x.tipo === 'REENTREGA');
+        recs.forEach((x) => { x.canalReentrega = canal; x.seguirPor = user.n; x.seguirEm = nowISO(); });
+        if (recs.length) await saveRecords(r, recs);
+        return send(200, { n: recs.length, recs });
       }
       case 'delete': {
         if (needAdm()) return;

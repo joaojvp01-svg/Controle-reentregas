@@ -454,8 +454,27 @@ async function carregarAprov(force) {
   } catch (e) { if ($('#apOut')) $('#apOut').innerHTML = `<div class="alert crit">${esc(e.message)}</div>`; }
 }
 const refOf = (r) => monthOf(r.data) + '|' + r.id;
+// canal por onde a reentrega segue (VD/VET); vazio = precisa definir
+const segue = (r) => r.canalReentrega || (r.canal === 'VD' || r.canal === 'VET' ? r.canal : '');
+function segueHTML(r) {
+  const v = segue(r); const mudou = v && r.canal && v !== r.canal;
+  if (!isAdm()) return v ? `<b>${v}</b>${mudou ? ` <span class="muted small">(de ${esc(r.canal)})</span>` : ''}` : '<span class="al warn">definir</span>';
+  return `<span class="seg-mini ${v ? '' : 'falta'} ${mudou ? 'mudou' : ''}" data-id="${r.id}" title="${mudou ? `Saiu como ${esc(r.canal)} e segue por ${v}` : 'Por onde a reentrega vai seguir'}">${['VD', 'VET'].map((c) => `<button type="button" data-c="${c}" class="${v === c ? 'on c' + c : ''}">${c}</button>`).join('')}</span>`;
+}
+// liga os botões VD/VET de uma área; onDone recebe o registro atualizado
+function bindSegue(root, achar, onDone) {
+  $$('.seg-mini[data-id] button', root).forEach((b) => b.onclick = async (e) => {
+    e.stopPropagation();
+    const id = b.parentElement.dataset.id; const r = achar(id); if (!r || segue(r) === b.dataset.c && r.canalReentrega) return;
+    const prev = r.canalReentrega; r.canalReentrega = b.dataset.c; onDone(r);
+    try { await api('seguir', { refs: [refOf(r)], canal: b.dataset.c }); const c = (S.cache || []).find((x) => x.id === id); if (c) c.canalReentrega = b.dataset.c; }
+    catch (err) { r.canalReentrega = prev; onDone(r); toast(err.message, true); }
+  });
+}
 async function decidir(ids, status) {
   const recs = AP.recs.filter((r) => ids.includes(r.id)); if (!recs.length) return;
+  const semCanal = status === 'APROVADO' ? recs.filter((r) => r.tipo === 'REENTREGA' && !segue(r)) : [];
+  if (semCanal.length) return toast(`Defina por onde segue (VD ou VET) antes de aprovar: NF ${semCanal.map((r) => r.nf).join(', ')}`, true);
   if (status === 'RECUSADO' && !confirm(`Recusar ${recs.length} lançamento(s) por ${MOTIVO_RECUSA}?`)) return;
   try {
     await api('status', { refs: recs.map(refOf), status, motivoRecusa: status === 'RECUSADO' ? MOTIVO_RECUSA : undefined });
@@ -475,6 +494,7 @@ function alertasDe(r, cnt) {
   const outraPend = (AP.recs || []).filter((x) => x.id !== r.id && x.nf === r.nf && x.tipo === r.tipo && x.data !== r.data);
   if (outraPend.length) a.push(`<span class="al warn" title="${esc(outraPend.map((x) => fD(x.data)).join(', '))}">Outro lançamento pendente</span>`);
   if (!r.cruzado) a.push('<span class="al warn">Sem consolidado</span>');
+  if (r.tipo === 'REENTREGA' && !segue(r)) a.push('<span class="al crit">Definir VD/VET</span>');
   if (r.tipo === 'OCORRENCIA' && r.descontoMotorista === 'PARCIAL' && !(r.itens || []).length) a.push('<span class="al warn">Parcial sem itens</span>');
   if ((r.tipo === 'NFD' || r.tipo === 'OCORRENCIA') && !nFotos(r)) a.push('<span class="al warn">Sem foto</span>');
   const outros = (S.cache || []).filter((x) => x.nf === r.nf && x.tipo !== r.tipo && x.status !== 'RECUSADO');
@@ -482,7 +502,7 @@ function alertasDe(r, cnt) {
   return a.join('');
 }
 const AP_COLS = {
-  REENTREGA: [['Recebido', 96], ['NF', 84], ['Cliente'], ['Motivo', 180], ['Valor', 112, 'num'], ['Motorista', 150], ['Alertas', 190]],
+  REENTREGA: [['Recebido', 96], ['NF', 84], ['Cliente'], ['Motivo', 170], ['Valor', 112, 'num'], ['Segue por', 104], ['Motorista', 150], ['Alertas', 180]],
   NFD: [['Recebido', 96], ['NF ref.', 84], ['Nº NFD', 80], ['Cliente'], ['Motivo', 120], ['Valor NFD', 112, 'num'], ['Motorista', 150], ['Alertas', 170]],
   OCORRENCIA: [['Recebido', 96], ['NF', 84], ['Cliente'], ['Motivo', 120], ['Desconto', 104], ['Itens / fotos', 110], ['Motorista', 150], ['Alertas', 150]]
 };
@@ -493,7 +513,7 @@ function celulasAprov(r, cnt) {
   const mot = `<td class="wrap" title="${esc(r.motorista || '')}">${esc(r.motorista || '')}<div class="muted small ell">${esc(r.transportadora || '')}${r.conferente ? ' · conf. ' + esc(r.conferente) : ''}</div></td>`;
   const al = `<td class="als">${alertasDe(r, cnt)}</td>`;
   const motivo = `<td class="wrap">${esc(r.motivo || '')}${r.obs ? `<div class="muted small ell" title="${esc(r.obs)}">💬 ${esc(r.obs)}</div>` : ''}</td>`;
-  if (r.tipo === 'REENTREGA') return rec + nf + cli + motivo + `<td class="num">${fMoney(r.valor)}</td>` + mot + al;
+  if (r.tipo === 'REENTREGA') return rec + nf + cli + motivo + `<td class="num">${fMoney(r.valor)}</td><td>${segueHTML(r)}</td>` + mot + al;
   if (r.tipo === 'NFD') return rec + nf + `<td>${esc(r.nfd || '')}</td>` + cli + motivo + `<td class="num">${fMoney(r.valor)}</td>` + mot + al;
   const it = r.itens || [];
   return rec + nf + cli + motivo + `<td>${r.descontoMotorista ? `<span class="desc-tag d-${r.descontoMotorista.replace(' ', '')}">${DESC_LB[r.descontoMotorista]}</span>` : ''}</td>`
@@ -547,6 +567,7 @@ function renderAprov() {
     tr.ondblclick = () => { const r = AP.recs.find((x) => x.id === id); if (r) editModal(r, () => carregarAprov(true)); };
     $('.rChk', tr).onchange = (e) => { e.target.checked ? AP.sel.add(id) : AP.sel.delete(id); tr.classList.toggle('sel', e.target.checked); updApSel(); };
     $('.ap-b.ok', tr).onclick = () => decidir([id], 'APROVADO');
+    bindSegue(tr, (x) => AP.recs.find((y) => y.id === x), () => renderAprov());
     $('.ap-b.bad', tr).onclick = () => decidir([id], 'RECUSADO');
   });
   $$('#apOut .gAll').forEach((c) => c.onchange = () => { c.closest('.grp').querySelectorAll('tr.ap-row').forEach((tr) => { const id = tr.dataset.id; c.checked ? AP.sel.add(id) : AP.sel.delete(id); tr.classList.toggle('sel', c.checked); $('.rChk', tr).checked = c.checked; }); updApSel(); });
@@ -562,7 +583,7 @@ function updApSel() {
 const CAMPOS = {
   base: [['data', 'Data', 'date'], ['hora', 'Horário', 'time'], ['nf', 'NF', 'text'], ['canal', 'Canal', 'canal'], ['status', 'Status', 'status'], ['motivo', 'Motivo', 'motivo'], ['turno', 'Turno', 'turno'], ['conferente', 'Conferente', 'text']],
   mot: [['motorista', 'Motorista', 'text'], ['placa', 'Placa', 'text'], ['transportadora', 'Transportadora', 'transp']],
-  REENTREGA: [['valor', 'Valor (R$)', 'num'], ['peso', 'Peso (kg)', 'num']],
+  REENTREGA: [['canalReentrega', 'Segue por', 'segue'], ['valor', 'Valor (R$)', 'num'], ['peso', 'Peso (kg)', 'num']],
   NFD: [['nfd', 'Nº NFD', 'text'], ['dataEmissao', 'Data emissão', 'date'], ['valor', 'Valor NFD (R$)', 'num']],
   OCORRENCIA: [['dataEntrega', 'Data da entrega', 'date'], ['descontoMotorista', 'Desconto do motorista', 'desconto']],
   CANCELADA: [['orEntrada', 'OR de entrada', 'text'], ['dataRetornoEstoque', 'Retorno ao estoque', 'date']],
@@ -575,6 +596,7 @@ function editModal(r, after) {
     if (ty === 'canal') return `<label>${lb}<select data-k="${k}">${opts([...CANAIS, 'N/D'], v, false)}</select></label>`;
     if (ty === 'status') return `<label>${lb}<select data-k="${k}">${opts(['PENDENTE', 'APROVADO', 'RECUSADO'], v, false)}</select></label>`;
     if (ty === 'motivo') { const l = motivosDo(r.tipo); return `<label>${lb}<select data-k="${k}">${opts(l.includes(v) || !v ? l : [v, ...l], v)}</select></label>`; }
+    if (ty === 'segue') return `<label>${lb}<select data-k="${k}"><option value="">— definir —</option>${['VD', 'VET'].map((c) => `<option ${segue(r) === c ? 'selected' : ''}>${c}</option>`).join('')}</select></label>`;
     if (ty === 'desconto') return `<label>${lb}<select data-k="${k}">${'<option value=""></option>' + DESCONTOS.map((d) => `<option value="${d}" ${d === v ? 'selected' : ''}>${DESC_LB[d]}</option>`).join('')}</select></label>`;
     if (ty === 'turno') return `<label>${lb}<select data-k="${k}">${opts(S.cfg.turnos, v)}</select></label>`;
     if (ty === 'transp') { const l = S.cfg.transportadoras; return `<label>${lb}<select data-k="${k}">${opts(l.includes(v) || !v ? l : [v, ...l], v)}</select></label>`; }
@@ -610,7 +632,7 @@ $('#modal').addEventListener('click', (e) => { if (e.target.id === 'modal') clos
 const RF = { de: null, ate: null, tipo: 'REENTREGA', status: '', transp: '', q: '', sort: 'data', dir: -1, lim: {}, fechado: {}, sel: new Set() };
 // [chave, rótulo, classe, largura, prioridade] · p2/p3 somem quando a tela fica estreita (continuam no detalhe ao passar o mouse)
 const RCOLS = {
-  REENTREGA: [['data', 'Data', '', 90], ['hora', 'Hora', '', 54, 'p3'], ['nf', 'NF', '', 76], ['_n', 'Vezes', 'num', 60], ['cliente', 'Cliente', 'wrap'], ['cidade', 'Cidade', 'wrap', 120, 'p3'], ['motivo', 'Motivo', 'wrap', 180], ['valor', 'Valor', 'num', 114], ['motorista', 'Motorista', 'wrap', 130, 'p2'], ['transportadora', 'Transp.', 'wrap', 100, 'p2']],
+  REENTREGA: [['data', 'Data', '', 58], ['hora', 'Hora', '', 54, 'p3'], ['nf', 'NF', '', 76], ['_n', 'Vezes', 'num', 56], ['cliente', 'Cliente', 'wrap'], ['cidade', 'Cidade', 'wrap', 120, 'p3'], ['motivo', 'Motivo', 'wrap', 160], ['valor', 'Valor', 'num', 106], ['_segue', 'Segue por', '', 104], ['motorista', 'Motorista', 'wrap', 130, 'p2'], ['transportadora', 'Transp.', 'wrap', 100, 'p2']],
   NFD: [['data', 'Data', '', 90], ['hora', 'Hora', '', 54, 'p3'], ['nf', 'NF ref.', '', 76], ['nfd', 'Nº NFD', '', 70], ['cliente', 'Cliente', 'wrap'], ['motivo', 'Motivo', 'wrap', 120], ['valor', 'Valor NFD', 'num', 114], ['_fotos', 'Fotos', '', 64], ['motorista', 'Motorista', 'wrap', 130, 'p2'], ['transportadora', 'Transp.', 'wrap', 100, 'p2']],
   OCORRENCIA: [['data', 'Data', '', 90], ['hora', 'Hora', '', 54, 'p3'], ['nf', 'NF origem', '', 80], ['cliente', 'Cliente', 'wrap'], ['cidade', 'Cidade', 'wrap', 120, 'p3'], ['motivo', 'Motivo', 'wrap', 130], ['descontoMotorista', 'Desc. motorista', '', 118], ['_itens', 'Itens', '', 92], ['_fotos', 'Fotos', '', 64], ['motorista', 'Motorista', 'wrap', 130, 'p2'], ['transportadora', 'Transp.', 'wrap', 100, 'p2']],
   CANCELADA: [['data', 'Processamento', '', 108], ['nf', 'NF', '', 76], ['cliente', 'Cliente', 'wrap'], ['cidade', 'Cidade', 'wrap', 120, 'p3'], ['valorNF', 'Valor NF', 'num', 114], ['orEntrada', 'OR entrada', '', 92, 'p2'], ['dataRetornoEstoque', 'Retorno estoque', '', 116]]
@@ -625,6 +647,8 @@ function detalhesHTML(r) {
     ['Lançado por', r.criadoPor && (r.criadoPor + (r.criadoEm ? ' · ' + new Date(r.criadoEm).toLocaleString('pt-BR', { dateStyle: 'short', timeStyle: 'short' }) : ''))],
     [r.status === 'RECUSADO' ? 'Recusado por' : 'Aprovado por', r.aprovadoPor && (r.aprovadoPor + (r.aprovadoEm ? ' · ' + new Date(r.aprovadoEm).toLocaleString('pt-BR', { dateStyle: 'short', timeStyle: 'short' }) : ''))],
     ['Motivo da recusa', r.status === 'RECUSADO' && (r.motivoRecusa || MOTIVO_RECUSA)],
+    ['Segue por', r.tipo === 'REENTREGA' && (segue(r) ? segue(r) + (segue(r) !== r.canal ? ` (saiu como ${r.canal})` : '') : 'não definido')],
+    ['Canal definido por', r.seguirPor],
     ['Desconto motorista', r.descontoMotorista && DESC_LB[r.descontoMotorista]],
     ['Fotos', nFotos(r) || null],
     ['Itens', (r.itens || []).map((x) => `${x.cod} × ${x.qtd}`).join(' · ')],
@@ -697,8 +721,10 @@ function filtraRegistros(ignoraTipo, de = RF.de, ate = RF.ate) {
 function cellReg(r, [k, , cls]) {
   const v = r[k];
   if (cls === 'wrap' && k !== 'cliente') return `<td class="wrap">${esc(v ?? '')}</td>`;
-  if (k === 'data' || k === 'dataEmissao' || k === 'dataEntrega' || k === 'dataRetornoEstoque') return `<td>${fD(v)}</td>`;
+  if (k === 'data') return `<td title="${fD(v)}">${fD(v).slice(0, 5)}</td>`;
+  if (k === 'dataEmissao' || k === 'dataEntrega' || k === 'dataRetornoEstoque') return `<td>${fD(v)}</td>`;
   if (k === 'nf') return `<td><button class="link nfLink">${esc(v)}</button></td>`;
+  if (k === '_segue') return `<td>${segueHTML(r)}</td>`;
   if (k === '_itens') { const it = r.itens || []; return `<td>${it.length ? `${it.length} · ${fNum(it.reduce((s, x) => s + (x.qtd || 0), 0))} un` : ''}</td>`; }
   if (k === '_fotos') { const n = nFotos(r); return `<td>${n ? `<span class="ph-badge">📷 ${n}</span>` : ''}</td>`; }
   if (k === 'descontoMotorista') return `<td>${v ? `<span class="desc-tag d-${v.replace(' ', '')}">${DESC_LB[v] || esc(v)}</span>` : ''}</td>`;
@@ -723,7 +749,7 @@ function renderRegistros() {
   const cols = RCOLS[RF.tipo];
   const ncol = cols.length + 2;
   const colg = '';
-  const head = `<tr><th class="chk" style="width:34px"><input type="checkbox" class="gAll"></th><th class="sort" style="width:110px" data-c="status">Status${RF.sort === 'status' ? (RF.dir > 0 ? ' ▲' : ' ▼') : ''}</th>${cols.map(([c, l, cls, w, pr]) => `<th class="sort ${cls === 'num' ? 'num' : ''} ${pr || ''}" ${w ? `style="width:${w}px"` : ''} data-c="${c}">${l}${RF.sort === c ? (RF.dir > 0 ? ' ▲' : ' ▼') : ''}</th>`).join('')}</tr>`;
+  const head = `<tr><th class="chk" style="width:34px"><input type="checkbox" class="gAll"></th><th class="sort" style="width:106px" data-c="status">Status${RF.sort === 'status' ? (RF.dir > 0 ? ' ▲' : ' ▼') : ''}</th>${cols.map(([c, l, cls, w, pr]) => `<th class="sort ${cls === 'num' ? 'num' : ''} ${pr || ''}" ${w ? `style="width:${w}px"` : ''} data-c="${c}">${l}${RF.sort === c ? (RF.dir > 0 ? ' ▲' : ' ▼') : ''}</th>`).join('')}</tr>`;
   let html = '';
   for (const [g, nome] of GRUPOS) {
     const gr = rows.filter((r) => grupoDe(r) === g);
@@ -759,6 +785,7 @@ function renderRegistros() {
   $$('#rOut .rChk').forEach((c) => c.onchange = () => { const id = c.closest('tr').dataset.id; c.checked ? RF.sel.add(id) : RF.sel.delete(id); c.closest('tr').classList.toggle('sel', c.checked); updSel(); });
   $$('#rOut .gAll').forEach((c) => c.onchange = () => { c.closest('.grp').querySelectorAll('.rChk').forEach((x) => { x.checked = c.checked; const id = x.closest('tr').dataset.id; c.checked ? RF.sel.add(id) : RF.sel.delete(id); x.closest('tr').classList.toggle('sel', c.checked); }); updSel(); });
   bindTip(); renderApDia();
+  bindSegue($('#rOut'), (id) => S.cache.find((x) => x.id === id), () => renderRegistros());
   if (isAdm()) $$('#rOut tbody tr[data-id]').forEach((tr) => tr.ondblclick = () => editModal(S.cache.find((x) => x.id === tr.dataset.id), () => loadAll().then(renderRegistros)));
   updSel();
 }
@@ -771,20 +798,21 @@ function renderApDia() {
   if ($('#rApN')) $('#rApN').textContent = lista.length;
   const el = $('#apDia'); if (!el || el.classList.contains('hidden')) return;
   const linha = (r) => [r.nf, fD(r.data), r.motivo || '', r.transportadora || ''].join('\t');
+  const dest = (r) => segue(r) || 'OUTROS';
   const bloco = (g, nome) => {
-    const l = lista.filter((r) => grupoDe(r) === g); if (!l.length && g === 'OUTROS') return '';
-    return `<div class="ap-g"><div class="ap-gh"><span class="dot c-${g === 'OUTROS' ? 'ND' : g}"></span><b>${nome}</b><span class="muted small">${l.length} NF(s)</span><span class="spacer"></span>
+    const l = lista.filter((r) => dest(r) === g); if (!l.length && g === 'OUTROS') return '';
+    return `<div class="ap-g"><div class="ap-gh"><span class="dot c-${g === 'OUTROS' ? 'ND' : g}"></span><b>Segue por ${nome}</b><span class="muted small">${l.length} NF(s)${l.some((r) => r.canal !== g) ? ` · ${l.filter((r) => r.canal !== g).length} vieram de outro canal` : ''}</span><span class="spacer"></span>
       <button class="btn sm apCopy" data-g="${g}" ${l.length ? '' : 'disabled'} title="Copia os números das NFs, um por linha">Copiar</button></div>
-      ${l.length ? `<table class="ap-t"><thead><tr><th>NF</th><th>Data retorno</th><th>Motivo</th><th>Transp.</th></tr></thead><tbody>${l.map((r) => `<tr><td><b>${esc(r.nf)}</b></td><td>${fD(r.data)}</td><td>${esc(r.motivo || '')}</td><td>${esc(r.transportadora || '')}</td></tr>`).join('')}</tbody></table>` : '<div class="muted small" style="padding:8px 2px">Nenhuma reentrega aprovada.</div>'}</div>`;
+      ${l.length ? `<table class="ap-t"><thead><tr><th>NF</th><th>Saiu como</th><th>Motivo</th><th>Retorno</th></tr></thead><tbody>${l.map((r) => `<tr><td><b>${esc(r.nf)}</b></td><td>${r.canal !== g ? `<span class="al info">${esc(r.canal)} → ${g === 'OUTROS' ? '?' : g}</span>` : `<span class="muted">${esc(r.canal)}</span>`}</td><td>${esc(r.motivo || '')}</td><td>${fD(r.data).slice(0, 5)}</td></tr>`).join('')}</tbody></table>` : '<div class="muted small" style="padding:8px 2px">Nenhuma reentrega aprovada.</div>'}</div>`;
   };
   el.innerHTML = `<div class="ap-h"><b>Reentregas aprovadas</b><button class="link" id="apClose">fechar ✕</button></div>
     <label>Aprovadas em<input type="date" id="apData" value="${RF.apDia}"></label>
     <div class="muted small">"Copiar" leva só os números das NFs, um por linha.</div>
-    ${bloco('VD', 'VD')}${bloco('VET', 'VET')}${bloco('OUTROS', 'Promo / sem canal')}`;
+    ${bloco('VD', 'VD')}${bloco('VET', 'VET')}${bloco('OUTROS', '— canal não definido')}`;
   $('#apClose').onclick = () => { RF.apOpen = false; el.classList.add('hidden'); };
   $('#apData').onchange = () => { RF.apDia = $('#apData').value; renderApDia(); };
   const copiar = async (txt, n) => { try { await navigator.clipboard.writeText(txt); } catch { const t = document.createElement('textarea'); t.value = txt; document.body.appendChild(t); t.select(); document.execCommand('copy'); t.remove(); } toast(`${n} NF(s) copiada(s)`); };
-  $$('.apCopy', el).forEach((b) => b.onclick = () => { const l = lista.filter((r) => grupoDe(r) === b.dataset.g); copiar(l.map((r) => r.nf).join('\n'), l.length); });
+  $$('.apCopy', el).forEach((b) => b.onclick = () => { const l = lista.filter((r) => dest(r) === b.dataset.g); copiar(l.map((r) => r.nf).join('\n'), l.length); });
 }
 // ---- tooltip de detalhes ----
 function bindTip() {
@@ -804,7 +832,7 @@ function updSel() {
 }
 function exportXlsx(rows, nome) {
   const data = rows.map((r) => ({
-    Tipo: TIPOS[r.tipo], Data: fD(r.data), Hora: r.hora || '', NF: r.nf, 'Retornos (histórico)': r._n || '', Canal: r.canal, Cliente: r.cliente || '', Representante: r.rep || '', Pedido: r.pedido || '',
+    Tipo: TIPOS[r.tipo], Data: fD(r.data), Hora: r.hora || '', NF: r.nf, 'Retornos (histórico)': r._n || '', Canal: r.canal, 'Segue por': r.tipo === 'REENTREGA' ? segue(r) : '', Cliente: r.cliente || '', Representante: r.rep || '', Pedido: r.pedido || '',
     'Data faturamento': fD(r.dtFat), Cidade: r.cidade || '', Motivo: r.motivo || '', Valor: r.valor ?? '', Peso: r.peso ?? '', 'Nº NFD': r.nfd || '', 'Data emissão NFD': fD(r.dataEmissao), 'Data entrega': fD(r.dataEntrega),
     'OR entrada': r.orEntrada || '', 'Retorno estoque': fD(r.dataRetornoEstoque), Motorista: r.motorista || '', Placa: r.placa || '', Transportadora: r.transportadora || '', Conferente: r.conferente || '', Turno: r.turno || '',
     'Desconto motorista': r.descontoMotorista ? DESC_LB[r.descontoMotorista] : '', 'Qtd fotos': nFotos(r) || '', 'Itens (código × qtd)': (r.itens || []).map((x) => `${x.cod} × ${x.qtd}`).join('\n'),
